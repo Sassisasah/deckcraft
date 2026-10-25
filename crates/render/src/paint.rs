@@ -279,6 +279,19 @@ pub fn tile_origin(bounds: Rect, align: &str, tile: (f64, f64), offset: (f64, f6
     Point::new(bounds.x0 + ax * (bounds.width() - tile.0) + ox, bounds.y0 + ay * (bounds.height() - tile.1) + oy)
 }
 
+/// A decoded picture (a video frame) stretched over `dest`.
+pub fn pixmap(ctx: &mut RenderContext, pm: &std::sync::Arc<vello_cpu::Pixmap>, dest: Rect, m: Affine) {
+    let (iw, ih) = (pm.width() as f64, pm.height() as f64);
+    if iw < 1.0 || ih < 1.0 {
+        return;
+    }
+    let image = vello_cpu::Image {
+        image: vello_cpu::ImageSource::Pixmap(pm.clone()),
+        sampler: peniko::ImageSampler { quality: peniko::ImageQuality::Medium, ..Default::default() },
+    };
+    draw_image(ctx, &image, iw, ih, dest, m, 1.0);
+}
+
 fn draw_image(ctx: &mut RenderContext, image: &vello_cpu::Image, iw: f64, ih: f64, dest: Rect, m: Affine, alpha: f64) {
     let t = m * Affine::translate(dest.origin().to_vec2()) * Affine::scale_non_uniform(dest.width() / iw, dest.height() / ih);
     ctx.set_transform(t);

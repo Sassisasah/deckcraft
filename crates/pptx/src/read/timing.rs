@@ -225,3 +225,31 @@ fn plays_as_build(effects: &[&Animation], text: &TextBody) -> bool {
     }
     matched == effects.len()
 }
+
+/// The media settings PowerPoint keeps in the timing tree (`p:video`/`p:audio` → `p:cMediaNode`):
+/// volume and mute, Loop until Stopped (`cTn repeatCount="indefinite"`) and Hide While Not
+/// Playing (`showWhenStopped="0"`), and Play Full Screen (`p:video fullScrn="1"`), copied onto
+/// the media shapes they target.
+pub fn media_settings(ctx: &IdCtx, timing: &El, shapes: &mut [Shape]) {
+    let Some(tn) = timing.child("tnLst") else { return };
+    let mut full = vec![];
+    tn.find_all("video", &mut full);
+    let full: Vec<u32> =
+        full.iter().filter(|v| v.bool("fullScrn") == Some(true)).filter_map(|v| v.find("spTgt").and_then(|t| t.u32("spid"))).collect();
+    let mut nodes = vec![];
+    tn.find_all("cMediaNode", &mut nodes);
+    for n in nodes.into_iter().take(1000) {
+        let file_id = n.find("spTgt").and_then(|t| t.u32("spid"));
+        let Some(id) = file_id.and_then(|f| ctx.lookup(f)) else { continue };
+        let Some(Shape { kind: deckcraft_model::ShapeKind::Media(clip), .. }) = deckcraft_model::find_shape_mut(shapes, id) else { continue };
+        if let Some(v) = n.attr("vol").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
+            clip.volume = (v / 100_000.0).clamp(0.0, 1.0);
+        }
+        if n.bool("mute") == Some(true) {
+            clip.volume = 0.0;
+        }
+        clip.hide_while_not_playing = n.bool("showWhenStopped") == Some(false);
+        clip.loop_play = n.child("cTn").and_then(|c| c.attr("repeatCount")) == Some("indefinite");
+        clip.full_screen = file_id.is_some_and(|f| full.contains(&f));
+    }
+}

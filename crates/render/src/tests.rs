@@ -2874,3 +2874,23 @@ fn pie_data_labels_take_the_chart_text_colour_when_it_has_one() {
     assert!(count(&coloured, &red) > 30, "the labels take the chart's red: {} red pixels", count(&coloured, &red));
     assert!(count(&plain, &white) > count(&coloured, &white), "the labels were white before");
 }
+
+#[test]
+fn a_video_frame_is_drawn_instead_of_the_poster() {
+    let clip = Shape {
+        id: ShapeId(9),
+        xfrm: Some(Xfrm::new(100.0, 100.0, 320.0, 180.0)),
+        kind: ShapeKind::Media(deckcraft_model::MediaClip { video: true, ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![clip]);
+    // 2×2 pure blue in BGRA.
+    let frame = VideoFrame::from_bgra(2, 2, &[255, 0, 0, 255].repeat(4)).expect("frame");
+    assert!(VideoFrame::from_bgra(2, 2, &[0; 15]).is_none(), "a short buffer is refused");
+    let frames = [(ShapeId(9), frame)];
+    let img = render_slide(&p, 0, &RenderOpts { scale: 0.25, video_frames: &frames, ..Default::default() });
+    let [r, g, b, _] = img.pixel(65, 45);
+    assert!(b > 200 && r < 40 && g < 40, "the frame is drawn: {:?}", img.pixel(65, 45));
+    let img = render_slide(&p, 0, &RenderOpts { scale: 0.25, ..Default::default() });
+    assert_ne!(img.pixel(65, 45)[..3], [0, 0, 255], "without a frame the placeholder shows");
+}

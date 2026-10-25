@@ -228,6 +228,8 @@ pub struct RenderOpts<'a> {
     pub editing_text: Option<ShapeId>,
     /// Animated GIF pictures and how far into their play they are (seconds); others show frame 1.
     pub gif_times: &'a [(ShapeId, f64)],
+    /// Current pictures of playing (or paused) videos, drawn instead of their poster frame.
+    pub video_frames: &'a [(ShapeId, VideoFrame)],
     /// Worker threads (0 = this thread; required when effects use filters).
     pub threads: u16,
     /// Translate the slide within the output (pixels) and output size override.
@@ -256,6 +258,7 @@ impl Default for RenderOpts<'_> {
             skip_text: None,
             editing_text: None,
             gif_times: &[],
+            video_frames: &[],
             threads: 0,
             offset: (0.0, 0.0),
             size: None,
@@ -609,6 +612,23 @@ pub fn camera_turn(rctx: &Ctx, s: &Shape, w: f64, h: f64) -> Option<Affine> {
     }
     let (e, _) = resolve::effects(rctx, s);
     e.as_ref().and_then(|e| e.raw3d.as_deref()).and_then(camera::from_raw).and_then(|c| camera::affine(&c, w, h))
+}
+
+/// One picture of a video, ready to draw (see [`RenderOpts::video_frames`]).
+#[derive(Clone, Debug)]
+pub struct VideoFrame(pub Arc<vello_cpu::Pixmap>);
+
+impl VideoFrame {
+    /// From opaque pixels in BGRA order, `width * height * 4` bytes (as video decoders deliver
+    /// them); `None` for an empty or mismatched buffer.
+    pub fn from_bgra(width: u32, height: u32, bgra: &[u8]) -> Option<VideoFrame> {
+        let (w, h) = (u16::try_from(width).ok()?, u16::try_from(height).ok()?);
+        if w == 0 || h == 0 || bgra.len() != width as usize * height as usize * 4 {
+            return None;
+        }
+        let data = bgra.chunks_exact(4).map(|p| vello_cpu::color::PremulRgba8 { r: p[2], g: p[1], b: p[0], a: 255 }).collect();
+        Some(VideoFrame(Arc::new(vello_cpu::Pixmap::from_parts(data, w, h))))
+    }
 }
 
 /// The rectangle a picture's image occupies given its crop (fractions; negative = padding).
@@ -1138,7 +1158,11 @@ impl Renderer {
             ShapeKind::Media(mc) => {
                 ctx.set_transform(m);
                 let bounds = Rect::new(0.0, 0.0, w, h);
-                if let Some(p) = mc.poster {
+                if let Some((_, vf)) = f.opts.video_frames.iter().find(|v| v.0 == s.id) {
+                    ctx.push_clip_layer(&outline);
+                    paint::pixmap(ctx, &vf.0, crop_dest(bounds, mc.crop), m);
+                    ctx.pop_layer();
+                } else if let Some(p) = mc.poster {
                     let pf = deckcraft_model::style::PictureFill { media: p, crop: mc.crop, ..Default::default() };
                     ctx.push_clip_layer(&outline);
                     paint::picture(ctx, f.pres, &pf, bounds, m, None);
@@ -1147,7 +1171,7 @@ impl Renderer {
                     ctx.set_paint(peniko::Color::from_rgba8(20, 20, 24, 255));
                     ctx.fill_rect(&bounds);
                 }
-                if !mc.video || mc.poster.is_none() {
+                if !mc.video || (mc.poster.is_none() && !f.opts.video_frames.iter().any(|v| v.0 == s.id)) {
                     paint::media_glyph(ctx, mc.video, bounds);
                 }
             }

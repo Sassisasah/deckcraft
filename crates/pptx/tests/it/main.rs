@@ -13,6 +13,7 @@ mod kept_parts;
 mod locks;
 mod malformed;
 mod math_ns;
+mod media_settings;
 mod notes;
 mod ole;
 mod ole_vml;
