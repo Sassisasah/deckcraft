@@ -2874,3 +2874,24 @@ fn pie_data_labels_take_the_chart_text_colour_when_it_has_one() {
     assert!(count(&coloured, &red) > 30, "the labels take the chart's red: {} red pixels", count(&coloured, &red));
     assert!(count(&plain, &white) > count(&coloured, &white), "the labels were white before");
 }
+
+#[test]
+fn slide_animation_states_leave_layout_shapes_with_the_same_id_alone() {
+    // Shape ids are unique per part: the slide's shape 7 and the layout's shape 7 are different
+    // shapes. Hiding the slide's one must not hide the layout's.
+    let box_at = |x: f64| Shape {
+        id: ShapeId(7),
+        xfrm: Some(Xfrm::new(x, 100.0, 200.0, 200.0)),
+        style: Some(ShapeStyle::accent(deckcraft_color::SchemeSlot::Accent1)),
+        ..Default::default()
+    };
+    let mut p = deck_with(vec![box_at(600.0)]);
+    let lid = p.slides[0].layout;
+    let master = p.masters.iter_mut().find(|m| m.layout(lid).is_some()).expect("master");
+    let layout = std::sync::Arc::make_mut(master).layouts.iter_mut().find(|l| l.id == lid).expect("layout");
+    layout.shapes.push(box_at(100.0));
+    let hide = |id: ShapeId| if id == ShapeId(7) { ShapeState { visible: false, ..Default::default() } } else { ShapeState::default() };
+    let img = render_slide(&p, 0, &RenderOpts { scale: 0.25, state: Some(&hide), ..Default::default() });
+    assert_ne!(img.pixel(50, 50), [255, 255, 255, 255], "the layout's shape is drawn");
+    assert_eq!(img.pixel(175, 50), [255, 255, 255, 255], "the slide's shape is hidden");
+}

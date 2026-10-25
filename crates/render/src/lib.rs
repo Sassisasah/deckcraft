@@ -321,6 +321,9 @@ pub struct Renderer {
     group_fill: Option<(Fill, Affine, Rect)>,
     /// Their aligned outlines, kept from frame to frame.
     morphs: morph_path::Cache,
+    /// Drawing the master's or layout's own graphics: animation states belong to the slide's
+    /// shapes, whose ids can repeat on the master and layout.
+    in_backdrop: bool,
 }
 
 impl Default for Renderer {
@@ -333,6 +336,7 @@ impl Default for Renderer {
             view: Affine::IDENTITY,
             group_fill: None,
             morphs: morph_path::Cache::default(),
+            in_backdrop: false,
         }
     }
 }
@@ -658,6 +662,7 @@ impl Renderer {
     /// Background plus the master and layout graphics the slide shows.
     fn backdrop(&mut self, ctx: &mut RenderContext, f: &Frame, rctx: &Ctx, slide: &Slide, view: Affine) {
         self.background(ctx, f, rctx, Some(slide), view);
+        self.in_backdrop = true;
         let (show_layout, show_master) = resolve::show_master_shapes(slide, rctx.layout);
         if show_master {
             let mctx = Ctx::for_master(f.pres, rctx.master);
@@ -675,6 +680,7 @@ impl Renderer {
                 }
             }
         }
+        self.in_backdrop = false;
     }
 
     fn slide(&mut self, pres: &Presentation, slide: &Slide, index: usize, opts: &RenderOpts) -> Image {
@@ -897,7 +903,7 @@ impl Renderer {
             return;
         }
         // Footer placeholders on layouts/masters show only on slides that include them.
-        let st = f.opts.state.map(|g| g(s.id)).unwrap_or_default();
+        let st = if self.in_backdrop { ShapeState::default() } else { f.opts.state.map(|g| g(s.id)).unwrap_or_default() };
         if !st.visible || st.opacity <= 0.001 {
             return;
         }
