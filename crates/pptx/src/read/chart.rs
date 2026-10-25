@@ -115,6 +115,16 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
     c.style = root.child_val("style").and_then(|v| v.parse().ok()).unwrap_or(2);
     if let Some(t) = ch.child("title") {
         c.title = Some(rich_text(t).unwrap_or_else(|| "Chart Title".into()));
+        c.title_runs = title_runs(t);
+        if let Some(ml) = t.path(&["layout", "manualLayout"])
+            && ml.child_val("xMode").is_none_or(|m| m == "edge")
+            && ml.child_val("yMode").is_none_or(|m| m == "edge")
+        {
+            let f = |k: &str| ml.child_val(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && (0.0..1.0).contains(v));
+            if let (Some(x), Some(y)) = (f("x"), f("y")) {
+                c.title_pos = Some([x, y]);
+            }
+        }
     }
     if ch.child("autoTitleDeleted").and_then(|a| a.bool("val")) == Some(true) {
         c.title = None;
@@ -240,6 +250,7 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
                 // The group asks for no labels and the series does not say otherwise.
                 ser.data_labels = Some(false);
             }
+            ser.label_style = label_style(s.child("dLbls"), g.child("dLbls"));
             for t in s.children_named("trendline").take(16) {
                 if let Some(t) = trendline(t) {
                     ser.trendlines.push(t);
@@ -328,6 +339,29 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
         n => source_format(a).or_else(|| n.and_then(|n| n.attr("formatCode")).map(str::to_string)),
     };
     let deleted = |a: &El| a.child("delete").and_then(|d| d.bool("val")) == Some(true);
+    // No labels: deleted, or `c:tickLblPos val="none"` (the axis line and gridlines may stay).
+    let unlabelled = |a: &El| deleted(a) || a.child_val("tickLblPos") == Some("none");
+    // Gridlines drawn: present, and their line not `a:noFill`.
+    let grid = |a: &El, k: &str| a.child(k).is_some_and(|g| g.path(&["spPr", "ln", "noFill"]).is_none());
+    // The plot rectangle when the file places it (inner: without the axis labels).
+    if let Some(ml) = pa.path(&["layout", "manualLayout"])
+        && ml.child_val("xMode").is_none_or(|m| m == "edge")
+        && ml.child_val("yMode").is_none_or(|m| m == "edge")
+    {
+        let f = |k: &str| ml.child_val(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+        if let (Some(x), Some(y), Some(w), Some(h)) = (f("x"), f("y"), f("w"), f("h"))
+            && w > 0.05
+            && h > 0.05
+        {
+            let r = Some([x, y, w.min(1.0 - x), h.min(1.0 - y)]);
+            // `outer` (the default) includes the axis labels; `inner` is the plot itself.
+            if ml.child_val("layoutTarget") == Some("inner") {
+                c.plot_layout = r;
+            } else {
+                c.plot_outer = r;
+            }
+        }
+    }
     if c.kind == ChartType::Combo && c.series.iter().any(|s| s.secondary_axis) {
         let primary_id = val_ax.and_then(|a| a.child_val("axId"));
         // The other vertical value axis is the secondary one.
@@ -342,8 +376,8 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
     }
     let cat_ax = pa.child("catAx").or_else(|| pa.child("dateAx")).or_else(|| pa.children_named("valAx").find(|a| !vertical(a)));
     if let Some(v) = val_ax {
-        c.gridlines = v.child("majorGridlines").is_some();
-        c.minor_gridlines = v.child("minorGridlines").is_some();
+        c.gridlines = grid(v, "majorGridlines");
+        c.minor_gridlines = grid(v, "minorGridlines");
         let sc = v.child("scaling");
         c.y_min = sc.and_then(|s| s.child_val("min")).and_then(|v| v.parse().ok()).filter(|v: &f64| v.is_finite());
         c.y_max = sc.and_then(|s| s.child_val("max")).and_then(|v| v.parse().ok()).filter(|v: &f64| v.is_finite());
@@ -351,10 +385,12 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
         c.y_major = num(v, "majorUnit");
         c.y_log_base = sc.and_then(|s| s.child_val("logBase")).and_then(|v| v.parse().ok()).filter(|b: &f64| b.is_finite() && *b >= 2.0);
         c.y_format = format_code(v);
-        c.y_hidden = deleted(v);
+        c.y_hidden = unlabelled(v);
     }
     if let Some(a) = cat_ax {
         c.cat_reversed = a.child("scaling").and_then(|s| s.child_val("orientation")).is_some_and(|o| o == "maxMin");
+        c.x_hidden = unlabelled(a);
+        c.axis_line = simple_line(a.child("spPr"));
         c.axis_titles.0 = a.child("title").map(|t| rich_text(t).unwrap_or_else(|| "Axis Title".into()));
     }
     // Text sizes as the file sets them (PowerPoint draws chart text at these sizes, not scaled to
@@ -363,7 +399,12 @@ fn chart_within(root: &El, mut budget: usize) -> Option<Chart> {
     c.text_size = [val_ax, cat_ax, ch.child("legend")].into_iter().flatten().find_map(|e| text_size(e.child("txPr"))).or(chart_size);
     // Text colour likewise: the axes' and legend's, else the whole chart's.
     c.text_color = [val_ax, cat_ax, ch.child("legend"), Some(root)].into_iter().flatten().find_map(|e| text_color(e.child("txPr")));
-    c.title_size = ch.child("title").and_then(|t| text_size(t.child("tx").and_then(|x| x.child("rich"))).or_else(|| text_size(t.child("txPr"))));
+    // The title's size: its first run's own, else the paragraph defaults, else `c:txPr`.
+    c.title_size = ch.child("title").and_then(|t| {
+        let rich = t.child("tx").and_then(|x| x.child("rich"));
+        let run = rich.and_then(|r| r.children_named("p").flat_map(|p| p.children_named("r")).find_map(|r| run_size(r.child("rPr"))));
+        run.or_else(|| text_size(rich)).or_else(|| text_size(t.child("txPr")))
+    });
     Some(c)
 }
 
@@ -525,6 +566,96 @@ fn copy_part(
 }
 
 /// The size in points of the first `a:defRPr` or `a:rPr` with one under `e` (`sz` in hundredths).
+fn run_size(rpr: Option<&El>) -> Option<f64> {
+    rpr?.attr("sz").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).map(|v| (v / 100.0).clamp(1.0, 400.0))
+}
+
+/// The first `b` set on a `defRPr`/`rPr` under `e`.
+fn text_bold(e: Option<&El>) -> Option<bool> {
+    fn rec(e: &El, depth: usize) -> Option<bool> {
+        if depth > 8 {
+            return None;
+        }
+        for c in e.elements() {
+            if (c.is("defRPr") || c.is("rPr"))
+                && let Some(b) = c.bool("b")
+            {
+                return Some(b);
+            }
+            if let Some(v) = rec(c, depth + 1) {
+                return Some(v);
+            }
+        }
+        None
+    }
+    rec(e?, 0)
+}
+
+/// A rich title's runs with their bold: the run's `b`, else its paragraph's `defRPr`, else
+/// the title's `c:txPr`. Empty when the title has no rich text.
+fn title_runs(t: &El) -> Vec<(String, bool)> {
+    let Some(rich) = t.path(&["tx", "rich"]) else { return vec![] };
+    let fallback = text_bold(t.child("txPr")).unwrap_or(false);
+    let mut out = vec![];
+    for (i, p) in rich.children_named("p").take(64).enumerate() {
+        if i > 0 {
+            out.push(("\n".to_string(), false));
+        }
+        let para = p.path(&["pPr", "defRPr"]).and_then(|d| d.bool("b")).unwrap_or(fallback);
+        for r in p.children_named("r").take(256) {
+            let b = r.child("rPr").and_then(|x| x.bool("b")).unwrap_or(para);
+            out.push((r.child("t").map(|x| x.text()).unwrap_or_default(), b));
+        }
+    }
+    out
+}
+
+/// A series' data-label look: its own `c:dLbls` settings, else its group's.
+fn label_style(own: Option<&El>, group: Option<&El>) -> Option<deckcraft_model::chart::LabelStyle> {
+    if own.is_none() && group.is_none() {
+        return None;
+    }
+    let pick = |f: &dyn Fn(&El) -> Option<String>| own.and_then(f).or_else(|| group.and_then(f));
+    // `<c:showPercent/>` without a val attribute means true, as in the schema's default.
+    let flag = |k: &str| {
+        let f = |d: &El| d.child(k).map(|v| v.bool("val").unwrap_or(true));
+        own.and_then(f).or_else(|| group.and_then(f)).unwrap_or(false)
+    };
+    Some(deckcraft_model::chart::LabelStyle {
+        pos: pick(&|d: &El| d.child_val("dLblPos").map(str::to_string)),
+        fill: own.and_then(|d| simple_fill(d.child("spPr"))).or_else(|| group.and_then(|d| simple_fill(d.child("spPr")))),
+        size: own.and_then(|d| text_size(d.child("txPr"))).or_else(|| group.and_then(|d| text_size(d.child("txPr")))),
+        bold: own.and_then(|d| text_bold(d.child("txPr"))).or_else(|| group.and_then(|d| text_bold(d.child("txPr")))).unwrap_or(false),
+        color: own.and_then(|d| text_color(d.child("txPr"))).or_else(|| group.and_then(|d| text_color(d.child("txPr")))),
+        show_percent: flag("showPercent"),
+        show_category: flag("showCatName"),
+        leader_lines: flag("showLeaderLines"),
+        points: own
+            .map(|d| {
+                d.children_named("dLbl")
+                    .take(1000)
+                    .filter_map(|p| {
+                        let idx = p.child("idx")?.u32("val")? as usize;
+                        let ml = p.path(&["layout", "manualLayout"]);
+                        let f =
+                            |k: &str| ml.and_then(|m| m.child_val(k)).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && v.abs() <= 2.0);
+                        Some(deckcraft_model::chart::PointLabel {
+                            idx,
+                            offset: match (f("x"), f("y")) {
+                                (None, None) => None,
+                                (x, y) => Some((x.unwrap_or(0.0), y.unwrap_or(0.0))),
+                            },
+                            deleted: p.child("delete").and_then(|d| d.bool("val")).unwrap_or(false),
+                            size: text_size(p.child("txPr")),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        separator: pick(&|d: &El| d.child("separator").map(|v| v.text())).map(|t| t.chars().take(16).collect()),
+    })
+}
+
 fn text_size(e: Option<&El>) -> Option<f64> {
     fn rec(e: &El, depth: usize) -> Option<f64> {
         if depth > 8 {
@@ -548,6 +679,25 @@ fn text_size(e: Option<&El>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_axis_labels_unseen_gridlines_plot_layout_and_point_labels_are_read() {
+        let ns =
+            r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+        let xml = format!(
+            r#"<c:chartSpace {ns}><c:chart><c:plotArea><c:layout><c:manualLayout><c:layoutTarget val="inner"/><c:xMode val="edge"/><c:yMode val="edge"/><c:x val="0.1"/><c:y val="0.2"/><c:w val="0.7"/><c:h val="0.6"/></c:manualLayout></c:layout><c:pieChart><c:ser><c:idx val="0"/><c:dLbls><c:dLbl><c:idx val="1"/><c:layout><c:manualLayout><c:x val="0.05"/><c:y val="-0.02"/></c:manualLayout></c:layout><c:showVal val="1"/></c:dLbl><c:dLbl><c:idx val="2"/><c:delete val="1"/></c:dLbl><c:showPercent/><c:showLeaderLines val="1"/></c:dLbls><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:pieChart><c:catAx><c:axId val="1"/><c:tickLblPos val="none"/></c:catAx><c:valAx><c:axId val="2"/><c:majorGridlines><c:spPr><a:ln><a:noFill/></a:ln></c:spPr></c:majorGridlines><c:tickLblPos val="none"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#
+        );
+        let c = read_chart_xml(xml.as_bytes()).unwrap();
+        assert!(c.x_hidden && c.y_hidden, "tickLblPos none hides the labels");
+        assert!(!c.gridlines, "gridlines without a line are not drawn");
+        assert_eq!(c.plot_layout, Some([0.1, 0.2, 0.7, 0.6]));
+        assert_eq!(c.plot_outer, None);
+        let st = c.series[0].label_style.clone().unwrap();
+        assert!(st.show_percent && st.leader_lines);
+        let moved = st.points.iter().find(|p| p.idx == 1).unwrap();
+        assert_eq!(moved.offset, Some((0.05, -0.02)));
+        assert!(st.points.iter().any(|p| p.idx == 2 && p.deleted));
+    }
 
     #[test]
     fn sparse_caches_share_one_chart_wide_budget() {
@@ -704,6 +854,24 @@ mod tests {
         assert!(rev.cat_reversed, "maxMin reverses the category axis");
         // No c:gapWidth / c:overlap: the schema's 150 % and 0 %.
         assert_eq!((c.gap_width, c.overlap), (1.5, 0.0));
+    }
+
+    #[test]
+    fn title_runs_label_look_and_axis_line_are_read() {
+        // The title's run size wins over the paragraph default and its bold is kept; the data
+        // labels' box, text and place come from the series' `c:dLbls`, else the group's.
+        let ns =
+            r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+        let xml = format!(
+            r#"<c:chartSpace {ns}><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:pPr><a:defRPr sz="1862"/></a:pPr><a:r><a:rPr sz="1600" b="1"/><a:t>Bold</a:t></a:r><a:r><a:rPr sz="1600"/><a:t> normal</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:ser><c:idx val="0"/><c:dLbls><c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></c:spPr><c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz="800" b="1"/></a:pPr></a:p></c:txPr><c:showVal val="1"/></c:dLbls><c:val><c:numLit><c:ptCount val="1"/><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser><c:dLbls><c:dLblPos val="inEnd"/><c:showVal val="0"/></c:dLbls><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></c:spPr></c:catAx><c:valAx><c:axId val="2"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#
+        );
+        let c = read_chart_xml(xml.as_bytes()).unwrap();
+        assert_eq!(c.title_size, Some(16.0));
+        assert_eq!(c.title_runs, vec![("Bold".to_string(), true), (" normal".to_string(), false)]);
+        let st = c.series[0].label_style.clone().unwrap();
+        assert_eq!((st.pos.as_deref(), st.size, st.bold), (Some("inEnd"), Some(8.0), true));
+        assert!(matches!(st.fill, Some(Fill::Solid { .. })));
+        assert_eq!(c.axis_line.and_then(|l| l.width), Some(1.5));
     }
 
     #[test]

@@ -2533,7 +2533,7 @@ fn office_2016_charts_draw_their_own_layouts() {
     // Waterfall: the decrease floats (nothing under it near the axis), the total stands on it.
     let img = chart(ChartType::Waterfall, &[100.0, 40.0, -25.0, 115.0], vec![3]);
     let plot_bottom = (300..530).rev().find(|&y| ink(&img, 120, y)).unwrap_or(500);
-    let band = |i: f64| (80.0 + (900.0 - 80.0) * (i + 0.5) / 4.0) as u32;
+    let band = |i: f64| (30.0 + (950.0 - 30.0) * (i + 0.5) / 4.0) as u32;
     assert!(!ink(&img, band(2.0), plot_bottom - 20), "the decrease bar reaches the axis");
     assert!(ink(&img, band(3.0), plot_bottom - 20), "the total bar doesn't stand on the axis");
     assert!(ink(&img, band(1.0), 100), "the increase bar is missing");

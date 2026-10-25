@@ -181,6 +181,131 @@ pub(crate) fn label(
     crate::draw_text(ctx, rctx, &tmp, &body, r, m, &deckcraft_text::NoFields, None);
 }
 
+/// A chart title: its runs (text, bold) laid out from the top of `r`, wrapping at its width.
+/// Returns the height the text takes.
+#[allow(clippy::too_many_arguments)]
+fn title_text(ctx: &mut RenderContext, rctx: &Ctx, m: Affine, runs: &[(String, bool)], r: Rect, size: f64, align: Align, col: Rgba) -> f64 {
+    let mut body = TextBody::from_text("");
+    body.paragraphs.clear();
+    let mut para = deckcraft_model::text::Paragraph::new("");
+    para.runs.clear();
+    for (t, b) in runs {
+        if t == "\n" {
+            body.paragraphs.push(std::mem::replace(&mut para, deckcraft_model::text::Paragraph::new("")));
+            para.runs.clear();
+            continue;
+        }
+        let mut run = deckcraft_model::text::Run::new(t.clone());
+        run.props.bold = Some(*b);
+        para.runs.push(run);
+    }
+    body.paragraphs.push(para);
+    body.body.inset_l = Some(0.0);
+    body.body.inset_r = Some(0.0);
+    body.body.inset_t = Some(0.0);
+    body.body.inset_b = Some(0.0);
+    body.body.anchor = Some(Anchor::Top);
+    body.body.wrap = Some(true);
+    for p in &mut body.paragraphs {
+        p.props.align = Some(align);
+        p.props.bullet = Some(Bullet::None);
+        p.props.margin_left = Some(0.0);
+        p.props.indent = Some(0.0);
+        for run in &mut p.runs {
+            run.props.size = Some(size);
+            run.props.fill = Some(Fill::solid(ColorRef::rgb(col)));
+        }
+    }
+    let tmp = Shape { text: Some(body.clone()), ..Default::default() };
+    let opts = |rect| deckcraft_text::Opts { rect, fields: &deckcraft_text::NoFields, prompt_color: None, no_shrink: true };
+    let mut l = deckcraft_text::layout(rctx, &tmp, &body, &opts(r));
+    let mut r = r;
+    // A placed title's box fits its longest line, and the lines are centred in it.
+    if align == Align::Left {
+        let bw = l.bounds().width();
+        if bw > 0.0 && bw < r.width() {
+            for p in &mut body.paragraphs {
+                p.props.align = Some(Align::Center);
+            }
+            r.x1 = r.x0 + bw + 0.5;
+            let tmp = Shape { text: Some(body.clone()), ..Default::default() };
+            l = deckcraft_text::layout(rctx, &tmp, &body, &opts(r));
+        }
+    }
+    let height = l.bounds().height();
+    crate::draw_layout(ctx, &l, r, m);
+    height
+}
+
+/// The width of `text` set in one line at `size` points in the chart's text font.
+fn text_width(rctx: &Ctx, text: &str, size: f64) -> f64 {
+    let mut body = TextBody::from_text(text);
+    body.body.inset_l = Some(0.0);
+    body.body.inset_r = Some(0.0);
+    body.body.wrap = Some(false);
+    for p in &mut body.paragraphs {
+        for run in &mut p.runs {
+            run.props.size = Some(size);
+        }
+    }
+    let tmp = Shape { text: Some(body.clone()), ..Default::default() };
+    let opts =
+        deckcraft_text::Opts { rect: Rect::new(0.0, 0.0, 10_000.0, 1_000.0), fields: &deckcraft_text::NoFields, prompt_color: None, no_shrink: true };
+    deckcraft_text::layout(rctx, &tmp, &body, &opts).bounds().width()
+}
+
+/// A data label with a box behind it: `text` centred on `at` (or set beside it, by `anchor`),
+/// the box filled with `fill` around the text's extent.
+#[allow(clippy::too_many_arguments)]
+fn boxed_label(
+    ctx: &mut RenderContext,
+    rctx: &Ctx,
+    m: Affine,
+    text: &str,
+    at: Point,
+    size: f64,
+    bold: bool,
+    col: Rgba,
+    fill: Option<&Fill>,
+    anchor: Anchor,
+) {
+    let mut body = TextBody::from_text(text);
+    // PowerPoint's data-label box: 0.1" left and right, 0.05" top and bottom around the text.
+    body.body.inset_l = Some(7.2);
+    body.body.inset_r = Some(7.2);
+    body.body.inset_t = Some(3.6);
+    body.body.inset_b = Some(3.6);
+    body.body.anchor = Some(Anchor::Middle);
+    body.body.wrap = Some(false);
+    for p in &mut body.paragraphs {
+        p.props.align = Some(Align::Center);
+        p.props.bullet = Some(Bullet::None);
+        p.props.margin_left = Some(0.0);
+        p.props.indent = Some(0.0);
+        for run in &mut p.runs {
+            run.props.size = Some(size);
+            run.props.bold = Some(bold);
+            run.props.fill = Some(Fill::solid(ColorRef::rgb(col)));
+        }
+    }
+    let tmp = Shape { text: Some(body.clone()), ..Default::default() };
+    let probe = Rect::new(at.x - 500.0, at.y - 500.0, at.x + 500.0, at.y + 500.0);
+    let opts = |rect| deckcraft_text::Opts { rect, fields: &deckcraft_text::NoFields, prompt_color: None, no_shrink: true };
+    let ext = deckcraft_text::layout(rctx, &tmp, &body, &opts(probe)).bounds();
+    let (w, h) = (ext.width() + 14.4, size * 1.2 + 7.2);
+    let cy = match anchor {
+        Anchor::Bottom => at.y - h / 2.0,
+        Anchor::Top => at.y + h / 2.0,
+        _ => at.y,
+    };
+    let r = Rect::new(at.x - w / 2.0, cy - h / 2.0, at.x + w / 2.0, cy + h / 2.0);
+    if let Some(f) = fill.filter(|f| !matches!(f, Fill::None)) {
+        crate::paint::fill_path(ctx, rctx, f, None, &r.to_path(0.1), r, m, deckcraft_geom::preset::FillMode::Norm, 1.0, rctx.pres);
+    }
+    let l = deckcraft_text::layout(rctx, &tmp, &body, &opts(r));
+    crate::draw_layout(ctx, &l, r, m);
+}
+
 fn fmt_num(v: f64) -> String {
     if (v - v.round()).abs() < 1e-9 { format!("{}", v.round() as i64) } else { format!("{v:.1}") }
 }
@@ -287,10 +412,26 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
     // that suits the chart.
     let base = c.text_size.unwrap_or_else(|| (h.min(w) / 22.0).clamp(7.0, 18.0));
     let title_size = c.title_size.unwrap_or(base * 1.4);
-    let mut area = Rect::new(w * 0.04, h * 0.04, w * 0.96, h * 0.96);
+    // PowerPoint keeps about 11 pt between the chart's sides and its plot area.
+    let side = (w * 0.04).min(11.0);
+    let mut area = Rect::new(side, h * 0.04, w - side, h * 0.96);
     if let Some(t) = &c.title {
-        label(ctx, rctx, m, t, Rect::new(0.0, area.y0, w, area.y0 + title_size * 1.3), title_size, Align::Center, Anchor::Top, text_col, false);
-        area.y0 += title_size * 1.7;
+        // PowerPoint wraps a long title to at most 80 % of the chart's width (from its manual
+        // position, when the file places it) and moves the plot down by the lines it takes.
+        let (x0, y0) = c.title_pos.map_or((None, area.y0), |[x, y]| (Some(x * w), y * h));
+        let max_w = (w * 0.8).min(w - x0.unwrap_or(0.0)).max(title_size * 4.0);
+        let (bx0, bx1, align) = match x0 {
+            Some(x) => (x, x + max_w, Align::Left),
+            None => ((w - max_w) / 2.0, (w + max_w) / 2.0, Align::Center),
+        };
+        // The title is a text box with PowerPoint's insets (0.1" left and right, 0.05" top and
+        // bottom); the plot starts below the box.
+        let (il, it) = (7.2, 3.6);
+        let runs = if c.title_runs.is_empty() { vec![(t.clone(), false)] } else { c.title_runs.clone() };
+        let height =
+            title_text(ctx, rctx, m, &runs, Rect::new(bx0 + il, y0 + it, bx1 - il, h), title_size, align, text_col).max(title_size * 1.2) + 2.0 * it;
+        // PowerPoint leaves about three quarters of the title's size between its box and the plot.
+        area.y0 = area.y0.max(y0 + height + title_size * 0.75);
     }
     let pie = matches!(c.kind, ChartType::Pie | ChartType::Doughnut);
     // Legend placed by `c:legendPos`.
@@ -357,6 +498,11 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
             }
         }
     }
+    // A plot area the file places (outer box, axis labels included) takes that box, whatever the
+    // title and legend left.
+    if let Some([x, y, pw, ph]) = c.plot_outer {
+        area = Rect::new(x * w, y * h, (x + pw) * w, (y + ph) * h);
+    }
     if pie {
         let Some(s) = c.series.first() else { return };
         let vals: Vec<f64> = s.values.iter().map(|v| v.unwrap_or(0.0).max(0.0)).collect();
@@ -364,9 +510,66 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
         if total <= 0.0 {
             return;
         }
-        let r = (area.width().min(area.height()) / 2.0) * 0.95;
-        let cen = area.center();
+        // The labels: inside the slices, or outside (`outEnd`, and `bestFit` for a slice too
+        // small to hold its label). Outside labels shrink the pie so they stay in the frame.
+        let st = s.label_style.clone().unwrap_or_default();
+        let labelled = c.series_any_labels(s);
+        let lsize = st.size.unwrap_or(base);
+        // Whole percents that add up to 100, as PowerPoint shows them: rounded down, and the
+        // points left over go to the largest remainders.
+        let shares: Vec<f64> = {
+            let pct: Vec<f64> = vals.iter().map(|v| v / total * 100.0).collect();
+            let mut whole: Vec<f64> = pct.iter().map(|p| p.floor()).collect();
+            let left = (100.0 - whole.iter().sum::<f64>()).round().max(0.0) as usize;
+            let mut order: Vec<usize> = (0..pct.len()).collect();
+            order.sort_by(|a, b| (pct[*b] - whole[*b]).total_cmp(&(pct[*a] - whole[*a])));
+            for &k in order.iter().take(left) {
+                whole[k] += 1.0;
+            }
+            whole.iter().map(|p| p / 100.0).collect()
+        };
+        let texts: Vec<String> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, v)| if labelled { c.data_label_parts(s, c.categories.get(i).map(String::as_str), *v, shares[i]) } else { String::new() })
+            .collect();
+        let est_w = |t: &str| t.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * lsize * 0.55 + 4.0;
+        let pos = st.pos.as_deref().unwrap_or("bestFit");
+        // The file's inner plot rectangle holds the pie itself; otherwise the area less room for
+        // outside labels.
+        let fixed = c.plot_layout.or(c.plot_outer);
+        let frame = match fixed {
+            Some([x, y, pw, ph]) => Rect::new(x * w, y * h, (x + pw) * w, (y + ph) * h),
+            None => area,
+        };
+        let outside = |i: usize, r: f64| -> bool {
+            match pos {
+                "outEnd" => true,
+                "bestFit" => {
+                    let sweep = vals[i] / total * std::f64::consts::TAU;
+                    // Room inside: the chord across the slice at the label's distance.
+                    let room = 2.0 * r * 0.65 * (sweep / 2.0).min(std::f64::consts::FRAC_PI_2).sin();
+                    est_w(&texts[i]) > room || lsize * 1.2 * texts[i].lines().count().max(1) as f64 > r * 0.6
+                }
+                _ => false,
+            }
+        };
+        // `bestFit` keeps the labels together: when one has to go outside, PowerPoint sets them
+        // all outside, a little off the rim, with leader lines.
+        let r0 = (frame.width().min(frame.height()) / 2.0) * if fixed.is_some() { 1.0 } else { 0.95 };
+        let all_out = labelled && (pos == "outEnd" || (pos == "bestFit" && (0..vals.len()).any(|i| outside(i, r0))));
+        let lh_of = |t: &str| lsize * 1.2 * t.lines().count().max(1) as f64;
+        let gap = if pos == "bestFit" { lsize * 1.2 } else { lsize * 0.4 };
+        let mut r = r0;
+        if all_out && fixed.is_none() {
+            let lw = texts.iter().map(|t| est_w(t)).fold(0.0, f64::max);
+            let lh = texts.iter().map(|t| lh_of(t)).fold(0.0, f64::max);
+            r = ((frame.width() / 2.0 - lw - gap).min(frame.height() / 2.0 - lh - gap)).max(frame.width().min(frame.height()) * 0.2);
+        }
+        let cen = frame.center();
         let mut a0 = -std::f64::consts::FRAC_PI_2;
+        // (slice, label centre, inside, rim point the label belongs to)
+        let mut pie_labels: Vec<(usize, Point, bool, Point)> = vec![];
         for (i, v) in vals.iter().enumerate() {
             let sweep = v / total * std::f64::consts::TAU;
             let mut p = BezPath::new();
@@ -387,29 +590,74 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
             ctx.set_paint(color(Rgba::WHITE, 1.0));
             ctx.set_stroke(kurbo::Stroke::new(1.0));
             ctx.stroke_path(&p);
-            if c.series_data_labels(s) {
+            let own = st.points.iter().find(|p| p.idx == i);
+            if labelled && *v > 0.0 && !own.is_some_and(|p| p.deleted) {
                 let mid = a0 + sweep / 2.0;
-                let lp = Point::new(cen.x + r * 0.65 * mid.cos(), cen.y + r * 0.65 * mid.sin());
-                label(
-                    ctx,
-                    rctx,
-                    m,
-                    &c.data_label(s, *v),
-                    Rect::new(lp.x - 30.0, lp.y - 10.0, lp.x + 30.0, lp.y + 10.0),
-                    base,
-                    Align::Center,
-                    Anchor::Middle,
-                    // On the slices themselves: white, unless the chart's text was given a colour.
-                    if c.text_color.is_some() { text_col } else { Rgba::WHITE },
-                    false,
-                );
+                let (dx, dy) = (mid.cos(), mid.sin());
+                let rim = Point::new(cen.x + r * dx, cen.y + r * dy);
+                if all_out || (pos == "outEnd") {
+                    // Beside the rim: the label's near edge off the slice's middle.
+                    let (lw, lh) = (est_w(&texts[i]), lh_of(&texts[i]));
+                    let at = Point::new(cen.x + (r + gap) * dx + dx * lw / 2.0, cen.y + (r + gap) * dy + dy * lh / 2.0);
+                    pie_labels.push((i, at, false, rim));
+                } else {
+                    pie_labels.push((i, Point::new(cen.x + r * 0.65 * dx, cen.y + r * 0.65 * dy), true, rim));
+                }
             }
             a0 += sweep;
+        }
+        // Outside labels on each side keep clear of each other: from the top down, each one at
+        // least its height below the last.
+        for right in [true, false] {
+            let mut side: Vec<usize> = (0..pie_labels.len()).filter(|&k| !pie_labels[k].2 && (pie_labels[k].1.x >= cen.x) == right).collect();
+            side.sort_by(|a, b| pie_labels[*a].1.y.total_cmp(&pie_labels[*b].1.y));
+            let mut last: Option<f64> = None;
+            for k in side {
+                let lh = lh_of(&texts[pie_labels[k].0]);
+                if let Some(prev) = last
+                    && pie_labels[k].1.y < prev + lh
+                {
+                    pie_labels[k].1.y = prev + lh;
+                }
+                last = Some(pie_labels[k].1.y);
+            }
         }
         if c.kind == ChartType::Doughnut {
             ctx.set_transform(m);
             ctx.set_paint(color(Rgba::WHITE, 1.0));
             ctx.fill_path(&kurbo::Circle::new(cen, r * c.hole_size.clamp(0.1, 0.9)).to_path(0.1));
+        }
+        // Labels moved by hand: their offset from where they would be, as fractions of the chart.
+        let mut moved = vec![false; vals.len()];
+        for (i, at, inside, _) in &mut pie_labels {
+            if let Some((ox, oy)) = st.points.iter().find(|p| p.idx == *i).and_then(|p| p.offset) {
+                at.x += ox * w;
+                at.y += oy * h;
+                *inside = false;
+                moved[*i] = true;
+            }
+        }
+        for (i, at, inside, rim) in pie_labels {
+            // A leader line from the slice to a label set off the rim.
+            if !inside && st.leader_lines && (pos == "bestFit" || moved[i]) && rim.distance(at) > est_w(&texts[i]) / 2.0 + lsize {
+                let lw = est_w(&texts[i]);
+                let end = Point::new(if at.x >= cen.x { at.x - lw / 2.0 } else { at.x + lw / 2.0 }, at.y);
+                let mut l = BezPath::new();
+                l.move_to(rim);
+                l.line_to(end);
+                ctx.set_transform(m);
+                ctx.set_paint(color(Rgba::rgb(0xBF, 0xBF, 0xBF), 1.0));
+                ctx.set_stroke(kurbo::Stroke::new(0.75));
+                ctx.stroke_path(&l);
+            }
+            // On the slices: white, unless the labels or the chart's text were given a colour.
+            let col = match &st.color {
+                Some(cc) => rctx.color(cc, None),
+                None if inside && c.text_color.is_none() => Rgba::WHITE,
+                None => text_col,
+            };
+            let size = st.points.iter().find(|p| p.idx == i).and_then(|p| p.size).unwrap_or(lsize);
+            boxed_label(ctx, rctx, m, &texts[i], at, size, st.bold, col, st.fill.as_ref(), Anchor::Middle);
         }
         return;
     }
@@ -462,7 +710,8 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
     let primary_ticks: Vec<f64> = ticks((min, max, step)).map(|k| log.map_or(k, |(b, _)| b.powf(k))).collect();
     let label_w = |sec: bool, sc: (f64, f64, f64)| {
         let vals: Vec<f64> = if sec { ticks(sc).collect() } else { primary_ticks.clone() };
-        vals.iter().map(|v| c.axis_label(sec, *v).chars().count()).max().unwrap_or(1) as f64 * base * 0.55 + base * 0.6
+        // The longest label as set, and about half the text size to the plot.
+        vals.iter().map(|v| text_width(rctx, &c.axis_label(sec, *v), base)).fold(base * 0.55, f64::max) + base * 0.55
     };
     let gutter = if horiz {
         base * 4.5
@@ -472,10 +721,26 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
         clamp_soft(label_w(false, (min, max, step)), base * 1.5, area.width() * 0.3)
     };
     let gutter_r = second.filter(|_| !c.y2_hidden).map(|sc| clamp_soft(label_w(true, sc), base * 1.5, area.width() * 0.3)).unwrap_or(0.0);
-    let plot = if horiz {
-        Rect::new(area.x0 + gutter, area.y0, area.x1, area.y1 - base * 1.6)
+    // Room for the category labels under (or beside) the plot, none when the axis has no labels.
+    let cat_band = if c.x_hidden {
+        0.0
+    } else if horiz {
+        base * 1.6
     } else {
-        Rect::new(area.x0 + gutter, area.y0, area.x1 - gutter_r, area.y1 - base * 1.8)
+        base * 1.8
+    };
+    let plot = if let Some([x, y, pw, ph]) = c.plot_layout {
+        // The file places the plot (manual layout, inner): use it as PowerPoint does.
+        Rect::new(x * w, y * h, (x + pw) * w, (y + ph) * h)
+    } else if horiz {
+        Rect::new(
+            area.x0 + if c.x_hidden { base * 0.5 } else { gutter },
+            area.y0,
+            area.x1,
+            area.y1 - if c.y_hidden { base * 0.5 } else { base * 1.6 },
+        )
+    } else {
+        Rect::new(area.x0 + gutter, area.y0, area.x1 - gutter_r, area.y1 - cat_band)
     };
     if let Some(f) = &c.plot_fill {
         crate::paint::fill_path(ctx, rctx, f, None, &plot.to_path(0.1), plot, m, deckcraft_geom::preset::FillMode::Norm, 1.0, rctx.pres);
@@ -608,8 +873,8 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
         }
     }
     // Category labels: wrapped onto two lines when they don't fit their band (long date ranges).
-    let wraps = !horiz && c.categories.iter().any(|n| n.chars().count() as f64 * base * 0.5 > band);
-    for (i, name) in c.categories.iter().enumerate().filter(|_| xscale.is_none()) {
+    let wraps = !horiz && c.categories.iter().any(|n| n.contains(char::is_whitespace) && text_width(rctx, n, base) > band);
+    for (i, name) in c.categories.iter().enumerate().filter(|_| xscale.is_none() && !c.x_hidden) {
         let mid = if horiz { plot.y0 + band * (slot(i) + 0.5) } else { plot.x0 + band * (slot(i) + 0.5) };
         if horiz {
             label(
@@ -664,6 +929,8 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
         let step = bar * (1.0 - ov);
         let group = bar + step * (n - 1.0);
         // Error bars need each series' mean and spread: worked out once, not per point.
+        let mut bar_labels = vec![];
+        let stacked_bars = stacked;
         let stats: Vec<deckcraft_model::chart::SeriesStats> = bars.iter().map(|(_, s)| deckcraft_model::chart::SeriesStats::of(&s.values)).collect();
         for i in 0..ncat {
             let mut pos_acc = 0.0;
@@ -735,27 +1002,35 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
                         err_marks.push((mid, p0, p1, bar.min(base * 0.8) * 0.5, e.end_cap));
                     }
                 }
-                if c.series_data_labels(s) {
-                    let t = c.data_label(s, s.values.get(i).copied().flatten().unwrap_or(0.0));
-                    let lr = if horiz {
-                        Rect::new(r.x1 + 2.0, r.y0, r.x1 + 40.0, r.y1)
-                    } else {
-                        Rect::new(r.x0 - 10.0, r.y0 - base * 1.4, r.x1 + 10.0, r.y0)
-                    };
-                    label(
-                        ctx,
-                        rctx,
-                        m,
-                        &t,
-                        lr,
-                        base * 0.9,
-                        if horiz { Align::Left } else { Align::Center },
-                        if horiz { Anchor::Middle } else { Anchor::Bottom },
-                        text_col,
-                        false,
-                    );
+                // A point without a value has no label.
+                if c.series_any_labels(s)
+                    && let Some(val) = s.values.get(i).copied().flatten()
+                {
+                    let t = c.data_label_parts(s, c.categories.get(i).map(String::as_str), val, v);
+                    bar_labels.push((t, r, v < 0.0, s.label_style.clone().unwrap_or_default()));
                 }
             }
+        }
+        // Data labels go over every bar, so a neighbour's bar never covers them. Their default
+        // place is the segment's middle on stacked bars, past the bar's end otherwise.
+        for (t, r, neg, st) in bar_labels {
+            let size = st.size.unwrap_or(base * 0.9);
+            let col = st.color.as_ref().map_or(text_col, |cc| rctx.color(cc, None));
+            let pos = st.pos.as_deref().unwrap_or(if stacked_bars { "ctr" } else { "outEnd" });
+            // The bar's end and base along the value axis (top/bottom of a column, right/left of a bar).
+            let (at, anchor) = match (pos, horiz) {
+                ("ctr", _) => (r.center(), Anchor::Middle),
+                ("inBase", false) => (Point::new(r.center().x, if neg { r.y0 + size } else { r.y1 - size }), Anchor::Middle),
+                ("inEnd", false) => (Point::new(r.center().x, if neg { r.y1 - size } else { r.y0 + size }), Anchor::Middle),
+                (_, false) => (Point::new(r.center().x, if neg { r.y1 } else { r.y0 }), if neg { Anchor::Top } else { Anchor::Bottom }),
+                ("inBase", true) => (Point::new(if neg { r.x1 - size * 1.5 } else { r.x0 + size * 1.5 }, r.center().y), Anchor::Middle),
+                ("inEnd", true) => (Point::new(if neg { r.x0 + size * 1.5 } else { r.x1 - size * 1.5 }, r.center().y), Anchor::Middle),
+                (_, true) => {
+                    let half = (t.chars().count() as f64 * size * 0.3 + 7.2).max(size);
+                    (Point::new(if neg { r.x0 - half } else { r.x1 + half }, r.center().y), Anchor::Middle)
+                }
+            };
+            boxed_label(ctx, rctx, m, &t, at, size, st.bold, col, st.fill.as_ref(), anchor);
         }
     }
     // A stock chart's high-low lines and up/down bars (or close dashes) stand in for its series.
@@ -862,9 +1137,21 @@ fn draw_inner(ctx: &mut RenderContext, rctx: &Ctx, c: &Chart, m: Affine, w: f64,
         ax.move_to((plot.x0, zero));
         ax.line_to((plot.x1, zero));
     }
+    // The file's line when it sets one (no line at all for `a:noFill`), else PowerPoint's grey.
+    let (ax_col, ax_w) = match &c.axis_line {
+        Some(l) if matches!(l.fill, Some(Fill::None)) => return,
+        Some(l) => (
+            match &l.fill {
+                Some(Fill::Solid { color: cc }) => rctx.color(cc, None),
+                _ => Rgba::rgb(0xBF, 0xBF, 0xBF),
+            },
+            l.width.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.75).min(20.0),
+        ),
+        None => (Rgba::rgb(0xBF, 0xBF, 0xBF), 0.75),
+    };
     ctx.set_transform(m);
-    ctx.set_paint(color(Rgba::rgb(0xBF, 0xBF, 0xBF), 1.0));
-    ctx.set_stroke(kurbo::Stroke::new(0.75));
+    ctx.set_paint(color(ax_col, 1.0));
+    ctx.set_stroke(kurbo::Stroke::new(ax_w));
     ctx.stroke_path(&ax);
 }
 

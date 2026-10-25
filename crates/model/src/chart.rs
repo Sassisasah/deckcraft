@@ -245,6 +245,50 @@ pub struct Series {
     /// `c:errBars` on the values (y bars; a bar chart's run along its value axis).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_bars: Option<ErrorBars>,
+    /// How the series' data labels look and sit (`c:dLbls`: the series', else its group's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_style: Option<LabelStyle>,
+}
+
+/// The look of a series' data labels: `c:dLblPos`, the box (`c:spPr`) and the text (`c:txPr`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LabelStyle {
+    /// `ctr`, `inEnd`, `inBase`, `outEnd`…; `None`: the chart type's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pos: Option<String>,
+    /// The box behind the label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Fill>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    pub bold: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ColorRef>,
+    /// `c:showPercent`, `c:showCatName`: the share of the whole and the category name.
+    pub show_percent: bool,
+    pub show_category: bool,
+    /// `c:showLeaderLines`: lines from moved pie labels to their slices.
+    pub leader_lines: bool,
+    /// Single labels (`c:dLbl`): moved by hand (offset from their default place as fractions of
+    /// the chart), hidden, or set in their own size.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<PointLabel>,
+    /// `c:separator` between the parts; `None`: the language's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator: Option<String>,
+}
+
+/// One data label's own settings (`c:dLbl`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PointLabel {
+    pub idx: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<(f64, f64)>,
+    pub deleted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
 }
 
 /// Error bars (`c:errBars`): how far each point's bar reaches below and above it.
@@ -328,6 +372,16 @@ pub struct Chart {
     /// `None`: the file gives none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_size: Option<f64>,
+    /// The title's top-left corner as fractions of the chart (`c:title/c:layout/c:manualLayout`,
+    /// edge mode), when the file places it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_pos: Option<[f64; 2]>,
+    /// The category axis' line (`c:catAx/c:spPr/a:ln`), when the file sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axis_line: Option<Line>,
+    /// The title's runs (text, bold) when its rich text sets them; `\n` runs end paragraphs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub title_runs: Vec<(String, bool)>,
     /// Title text size in points (its rich text or `c:txPr`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_size: Option<f64>,
@@ -356,6 +410,17 @@ pub struct Chart {
     pub y_format: Option<String>,
     /// The value axis is deleted (`c:delete`): no labels, though gridlines may stay.
     pub y_hidden: bool,
+    /// The category axis shows no labels (`c:delete` or `c:tickLblPos val="none"`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub x_hidden: bool,
+    /// `c:plotArea/c:layout/c:manualLayout` with `layoutTarget` inner: the plot rectangle (without
+    /// axis labels) as fractions of the chart, `[x, y, w, h]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plot_layout: Option<[f64; 4]>,
+    /// The plot area's outer box (`manualLayout` without `layoutTarget inner`: axis labels
+    /// included) as fractions x, y, w, h.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plot_outer: Option<[f64; 4]>,
     /// The category axis runs backwards (`c:orientation val="maxMin"`): right to left, or on a
     /// horizontal bar chart top to bottom (the default puts the first category at the bottom).
     pub cat_reversed: bool,
@@ -452,6 +517,9 @@ impl Default for Chart {
             legend_overlay: false,
             text_size: None,
             title_size: None,
+            title_pos: None,
+            title_runs: vec![],
+            axis_line: None,
             data_labels: false,
             gridlines: true,
             minor_gridlines: false,
@@ -471,6 +539,9 @@ impl Default for Chart {
             y_log_base: None,
             y_format: None,
             y_hidden: false,
+            x_hidden: false,
+            plot_layout: None,
+            plot_outer: None,
             cat_reversed: false,
             y2_min: None,
             y2_max: None,
@@ -730,6 +801,32 @@ impl Chart {
         let axis = if self.on_secondary(s) { &self.y2_format } else { &self.y_format };
         let code = s.number_format.as_ref().or(axis.as_ref());
         crate::numfmt::format(code.map_or("General", String::as_str), v, self.lang.as_deref())
+    }
+
+    /// The text of a data label: category name, value and percent as series `s` asks for them,
+    /// joined by its separator (`; ` in German, `, ` otherwise). `share` is the value's part of
+    /// the whole (pie slices).
+    pub fn data_label_parts(&self, s: &Series, cat: Option<&str>, v: f64, share: f64) -> String {
+        let st = s.label_style.clone().unwrap_or_default();
+        let mut parts = vec![];
+        if st.show_category
+            && let Some(c) = cat
+        {
+            parts.push(c.to_string());
+        }
+        if self.series_data_labels(s) {
+            parts.push(self.data_label(s, v));
+        }
+        if st.show_percent {
+            parts.push(crate::numfmt::format("0%", share, self.lang.as_deref()));
+        }
+        let sep = st.separator.unwrap_or_else(|| if self.lang.as_deref().is_some_and(|l| l.starts_with("de")) { "; ".into() } else { ", ".into() });
+        parts.join(&sep)
+    }
+
+    /// Does series `s` show any data label (value, percent or category)?
+    pub fn series_any_labels(&self, s: &Series) -> bool {
+        self.series_data_labels(s) || s.label_style.as_ref().is_some_and(|st| st.show_percent || st.show_category)
     }
 
     /// Does series `s` show its data labels? The series' own `c:dLbls/c:showVal` wins — an
