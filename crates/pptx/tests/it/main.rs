@@ -1,4 +1,5 @@
 mod anchor;
+mod anim_behaviours;
 mod chart_embed;
 mod comments;
 mod corpus;

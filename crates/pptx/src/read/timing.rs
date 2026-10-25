@@ -1,6 +1,8 @@
 //! Slide transitions (`p:transition`) and animations (`p:timing`).
 
-use deckcraft_model::anim::{AnimClass, AnimStart, Animation, BuildRole, TextBuild, Transition, build_filled, paragraph_build_roles};
+use deckcraft_model::anim::{
+    AnimClass, AnimStart, Animation, Behavior, BehaviorKind, BuildRole, Keyframe, TextBuild, Transition, build_filled, paragraph_build_roles,
+};
 use deckcraft_model::{Shape, TextBody, find_shape};
 
 use super::shapes::IdCtx;
@@ -94,6 +96,163 @@ fn max_dur(e: &El, depth: usize) -> Option<u32> {
     best
 }
 
+/// Most behaviours kept per effect.
+const MAX_BEHAVIORS: usize = 256;
+
+/// The behaviours under an effect node, timed from the effect's start. Empty when any of them
+/// can't be played as written (open-ended timing, media commands, unknown elements).
+fn behaviors(effect: &El) -> Vec<Behavior> {
+    let mut out = vec![];
+    let ok = effect.child("childTnLst").is_some_and(|l| collect_behaviors(l, 0, &mut out, 0));
+    if ok && out.len() <= MAX_BEHAVIORS { out } else { vec![] }
+}
+
+fn collect_behaviors(list: &El, begin: u32, out: &mut Vec<Behavior>, depth: usize) -> bool {
+    if depth > 8 || out.len() > MAX_BEHAVIORS {
+        return false;
+    }
+    for e in list.elements() {
+        let kind = match e.local() {
+            "anim" => BehaviorKind::Anim,
+            "set" => BehaviorKind::Set,
+            "animScale" => BehaviorKind::Scale,
+            "animRot" => BehaviorKind::Rotate,
+            "animClr" => BehaviorKind::Color,
+            "animMotion" => BehaviorKind::Motion,
+            "animEffect" => BehaviorKind::Effect,
+            "par" | "seq" => {
+                // A nested group: its children start after its own delay.
+                let Some(ctn) = e.child("cTn") else { return false };
+                let Some(d) = delay_of(ctn) else { return false };
+                match ctn.child("childTnLst") {
+                    Some(l) if collect_behaviors(l, begin.saturating_add(d), out, depth + 1) => continue,
+                    Some(_) => return false,
+                    None => continue,
+                }
+            }
+            _ => return false,
+        };
+        let Some(b) = behavior(e, kind, begin) else { return false };
+        out.push(b);
+    }
+    true
+}
+
+/// A node's start delay in ms (`None` when it waits for an event).
+fn delay_of(ctn: &El) -> Option<u32> {
+    match ctn.path(&["stCondLst", "cond"]) {
+        Some(c) if c.attr("delay").is_some() => ms_attr(c, "delay"),
+        Some(c) if c.attr("evt").is_some() => None,
+        _ => Some(0),
+    }
+}
+
+/// `p:val`/`p:to`/`p:from`/`p:by` as text: `strVal`, `fltVal`, `intVal` or `boolVal`.
+fn val_text(v: Option<&El>) -> Option<String> {
+    let v = v?;
+    v.elements().find_map(|c| match c.local() {
+        "strVal" | "fltVal" | "intVal" | "boolVal" => c.attr("val").map(str::to_string),
+        _ => None,
+    })
+}
+
+fn pct_pair(e: Option<&El>) -> Option<(f64, f64)> {
+    let e = e?;
+    let f = |k: &str| e.f64(k).filter(|v| v.is_finite()).map(|v| (v / 100_000.0).clamp(-1000.0, 1000.0));
+    Some((f("x").unwrap_or(1.0), f("y").unwrap_or(1.0)))
+}
+
+fn behavior(e: &El, kind: BehaviorKind, begin: u32) -> Option<Behavior> {
+    let bh = e.child("cBhvr")?;
+    let ctn = bh.child("cTn")?;
+    let dur = match ctn.attr("dur") {
+        None => 0,
+        Some(_) => ms_attr(ctn, "dur")?,
+    };
+    let repeat = match ctn.attr("repeatCount") {
+        None => 1.0,
+        Some("indefinite") => return None,
+        Some(v) => v.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).map(|v| v / 1000.0).unwrap_or(1.0),
+    };
+    let frac = |k: &str| ctn.f64(k).filter(|v| v.is_finite()).map(|v| (v / 100_000.0).clamp(0.0, 1.0)).unwrap_or(0.0);
+    let tm_filter = ctn
+        .attr("tmFilter")
+        .map(|f| {
+            f.split(';')
+                .filter_map(|p| {
+                    let (a, b) = p.split_once(',')?;
+                    Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+                })
+                .filter(|(a, b)| a.is_finite() && b.is_finite())
+                .take(64)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut b = Behavior {
+        kind,
+        attr: bh.path(&["attrNameLst", "attrName"]).map(|a| a.text().trim().to_string()).unwrap_or_default(),
+        begin_ms: begin.saturating_add(delay_of(ctn)?),
+        dur_ms: dur,
+        repeat,
+        auto_reverse: ctn.bool("autoRev").unwrap_or(false),
+        accel: frac("accel"),
+        decel: frac("decel"),
+        hold: ctn.attr("fill") == Some("hold"),
+        tm_filter,
+        ..Default::default()
+    };
+    match kind {
+        BehaviorKind::Anim => {
+            b.discrete = e.attr("calcmode") == Some("discrete") || e.attr("valueType") == Some("str");
+            b.from = e.attr("from").map(str::to_string);
+            b.to = e.attr("to").map(str::to_string);
+            b.by = e.attr("by").map(str::to_string);
+            if let Some(l) = e.child("tavLst") {
+                for t in l.children_named("tav").take(256) {
+                    let time = match t.attr("tm") {
+                        None => 0.0,
+                        Some(v) => v.parse::<f64>().ok().filter(|v| v.is_finite())? / 100_000.0,
+                    };
+                    b.keys.push(Keyframe {
+                        time: time.clamp(0.0, 1.0),
+                        value: val_text(t.child("val")).unwrap_or_default(),
+                        fmla: t.attr("fmla").map(str::to_string),
+                    });
+                }
+            }
+        }
+        BehaviorKind::Set => {
+            b.to = val_text(e.child("to"));
+            // A colour set (`p:to/p:clrVal`): the colour at once.
+            b.color_to = e.path(&["to", "clrVal"]).and_then(dml::color);
+        }
+        BehaviorKind::Scale => {
+            b.scale_from = pct_pair(e.child("from"));
+            b.scale_to = pct_pair(e.child("to"));
+            b.scale_by = pct_pair(e.child("by"));
+        }
+        BehaviorKind::Rotate => {
+            let deg = |k: &str| e.f64(k).filter(|v| v.is_finite()).map(|v| v / 60_000.0);
+            b.degrees = deg("by").or_else(|| Some(deg("to")? - deg("from").unwrap_or(0.0)));
+        }
+        BehaviorKind::Color => {
+            b.hsl_space = e.attr("clrSpc") == Some("hsl");
+            b.ccw = e.attr("dir") == Some("ccw");
+            b.color_to = e.child("to").and_then(dml::color);
+            b.hsl_by = e.path(&["by", "hsl"]).map(|h| {
+                let f = |k: &str, d: f64| h.f64(k).filter(|v| v.is_finite()).map_or(0.0, |v| v / d);
+                (f("h", 60_000.0), f("s", 100_000.0), f("l", 100_000.0))
+            });
+        }
+        BehaviorKind::Motion => b.path = e.attr("path").map(str::to_string),
+        BehaviorKind::Effect => {
+            b.filter = e.attr("filter").map(str::to_string);
+            b.out = e.attr("transition") == Some("out");
+        }
+    }
+    Some(b)
+}
+
 /// Flatten the timing tree into the Animation Pane list.
 pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, shapes: &[Shape]) -> Vec<Animation> {
     let _ = (imp, part);
@@ -171,6 +330,7 @@ pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, shapes: 
         if let Some(clr) = c.find("animClr").and_then(|x| x.child("to")) {
             a.color = dml::color(clr);
         }
+        a.behaviors = behaviors(c);
         let grp = c.attr("grpId").unwrap_or("0").to_string();
         let build = paragraph.is_some() && by_para.iter().any(|(s, g)| *s == file_id && *g == grp);
         out.push((a, file_id, grp, build));

@@ -49,6 +49,17 @@ perspective-correct subdivided meshes.
 
 ## Animations: 64 of ~190 effects
 
+**Playback of imported decks.** An effect read from a file plays its saved behaviours
+(`crates/anim/src/behave.rs`): `p:anim` keyframes with formulas, `p:set`, `p:animScale`,
+`p:animRot`, `p:animClr` (including HSL `by`), `p:animMotion`, `p:animEffect` filters that cut a
+rectangle (wipe, barn, slide, fade), `tmFilter`, accel/decel, repeat and auto-reverse per
+behaviour, and `style.fontWeight`. Effects whose behaviours can't be played as written (open-ended
+timing, media commands, unknown elements, more than 256 behaviours) keep the preset model. So
+imported effects play right even where the table below lists the preset as missing from the
+gallery. Still approximated: `xshear`/`yshear`, `style.fontSize`/`fontStyle`, underline, filters
+that don't cut a rectangle (blinds, checkerboard, wheel, wedge, shapes), colour effects per
+paragraph.
+
 | Class | PowerPoint (gallery + More Effects) | DeckCraft | Missing (examples) |
 |---|---:|---:|---|
 | Entrance | ~50 | 24 | Plus, Wedge, Basic Zoom, Center Revolve, Compress, Stretch, Boomerang, Credits, Curve Up, Drop, Flip, Float, Pinwheel, Spiral In, Whip, Ascend, Descend, Unfold |
@@ -94,6 +105,7 @@ In, Wipe, Zoom, Float In, Grow/Shrink, Pulse, Spin, motion lines): weighted, ~85
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | Imported effects play from the behaviours saved in the file instead of an approximation of the preset (#1361); gallery counts unchanged |
 | 2026-10-22 | minor | Animation Pane ▸ Play From: with an effect selected, the preview starts at that effect on the play-all clock; the row says yes and the estimate drops to ~14–26 h |
 | 2026-10-15 | trivial | PPTX interactive sequences preserve later On Click effects and one click per paragraph; no change to playback or feature scores |
 | 2026-10-16 | trivial | PPTX paragraph builds edited in PowerPoint keep their clicks; sub-points save With Previous of their parent (#844) |

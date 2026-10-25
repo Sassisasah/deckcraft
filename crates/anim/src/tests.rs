@@ -229,6 +229,25 @@ fn repeat_and_auto_reverse_extend_duration() {
 }
 
 #[test]
+fn a_one_millisecond_set_stays_instant() {
+    use deckcraft_model::anim::{Behavior, BehaviorKind};
+    let mut a = anim(1, AnimClass::Entrance, "appear", AnimStart::OnClick);
+    a.duration_ms = 0;
+    a.behaviors = vec![Behavior {
+        kind: BehaviorKind::Set,
+        attr: "style.visibility".into(),
+        dur_ms: 1,
+        hold: true,
+        to: Some("visible".into()),
+        ..Default::default()
+    }];
+    let tl = Timeline::new(&slide_with(vec![a]), W, H);
+    assert_eq!(tl.step_duration(0), 0.0);
+    assert!(!tl.state(ShapeId(1), None, 0, 0.0).visible);
+    assert!(tl.state(ShapeId(1), None, 1, 0.0).visible, "shown once the click is done");
+}
+
+#[test]
 fn rewind_reverts_entrance() {
     let mut a = anim(1, AnimClass::Entrance, "fade", AnimStart::OnClick);
     a.rewind = true;

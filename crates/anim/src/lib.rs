@@ -13,6 +13,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod behave;
 mod easing;
 mod effects;
 mod interact;
@@ -33,6 +34,7 @@ mod tests_interact;
 mod transition_tests;
 
 pub use deckcraft_model::Rgba;
+pub use deckcraft_model::anim::ColorShift;
 use serde::{Deserialize, Serialize};
 
 pub use easing::ease;
@@ -60,11 +62,36 @@ pub struct AnimState {
     pub rotate: f64,
     pub clip: Option<[f64; 4]>,
     pub tint: Option<Rgba>,
+    /// Colour changes of the fill, the outline and the text (`p:animClr`), applied to the
+    /// colours the shape has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_shift: Option<ColorShift>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_shift: Option<ColorShift>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_shift: Option<ColorShift>,
+    /// `style.fontWeight` set by an effect: the text drawn bold (or not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
 }
 
 impl Default for AnimState {
     fn default() -> Self {
-        AnimState { visible: true, opacity: 1.0, offset_x: 0.0, offset_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotate: 0.0, clip: None, tint: None }
+        AnimState {
+            visible: true,
+            opacity: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotate: 0.0,
+            clip: None,
+            tint: None,
+            fill_shift: None,
+            line_shift: None,
+            text_shift: None,
+            bold: None,
+        }
     }
 }
 
@@ -95,6 +122,10 @@ impl AnimState {
             rotate: self.rotate + d.rotate,
             clip,
             tint: d.tint.or(self.tint),
+            fill_shift: d.fill_shift.or(self.fill_shift),
+            line_shift: d.line_shift.or(self.line_shift),
+            text_shift: d.text_shift.or(self.text_shift),
+            bold: d.bold.or(self.bold),
         }
     }
     /// Replace any non-finite number with its neutral value and clamp opacity and clip.

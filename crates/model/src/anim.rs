@@ -324,6 +324,147 @@ pub struct Animation {
     pub smooth_end: f64,
     pub bounce_end: f64,
     pub auto_reverse: bool,
+    /// The effect's behaviours as the file writes them (`p:anim`, `p:animClr`, `p:animScale`,
+    /// `p:animRot`, `p:animMotion`, `p:animEffect`, `p:set`). When present, players evaluate these
+    /// instead of approximating the preset; empty when the file has none the reader understands,
+    /// and to be cleared when the effect is edited.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub behaviors: Vec<Behavior>,
+}
+
+/// One behaviour of an effect, timed relative to the effect's start.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Behavior {
+    pub kind: BehaviorKind,
+    /// The animated attribute (`ppt_x`, `ppt_y`, `ppt_w`, `ppt_h`, `r`, `style.rotation`,
+    /// `style.opacity`, `style.visibility`, `fillcolor`, `stroke.color`, `style.color`,
+    /// `style.fontWeight`…).
+    pub attr: String,
+    pub begin_ms: u32,
+    /// One iteration; 0 for an instant `p:set`.
+    pub dur_ms: u32,
+    pub repeat: f64,
+    pub auto_reverse: bool,
+    pub accel: f64,
+    pub decel: f64,
+    /// `fill="hold"`: the end value stays; otherwise the attribute returns once the behaviour ends.
+    pub hold: bool,
+    /// `tmFilter`: (time, progress) points mapping the behaviour's time to its progress.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tm_filter: Vec<(f64, f64)>,
+    /// `p:anim` keyframes: time (0..1), value (number or formula text) and the keyframe's formula.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<Keyframe>,
+    /// `p:anim` without keyframes, `p:set`: from/to/by as text (numbers or formulas).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// `calcmode="discrete"`: values jump instead of blending.
+    pub discrete: bool,
+    /// `p:animScale`: from/to/by as (x, y) fractions (1 = 100 %).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale_from: Option<(f64, f64)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale_to: Option<(f64, f64)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale_by: Option<(f64, f64)>,
+    /// `p:animRot by` / `p:animClr` hue shift, degrees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degrees: Option<f64>,
+    /// `p:animClr`: target colour, or an HSL shift (hue degrees, saturation and lightness as
+    /// fractions), `clrSpc="hsl"` and `dir="ccw"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_to: Option<crate::style::ColorRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hsl_by: Option<(f64, f64, f64)>,
+    pub hsl_space: bool,
+    pub ccw: bool,
+    /// `p:animMotion` path (slide fractions) and `p:animEffect` filter (`fade`, `wipe(down)`…).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// `p:animEffect transition="out"`.
+    pub out: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BehaviorKind {
+    #[default]
+    Anim,
+    Set,
+    Scale,
+    Rotate,
+    Color,
+    Motion,
+    Effect,
+}
+
+/// A colour change in progress (`p:animClr`), applied to whatever colour the shape's fill, line
+/// or text has: toward `to` (in RGB, or in HSL turning `ccw` or not), or by an HSL shift.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ColorShift {
+    pub to: Option<crate::Rgba>,
+    /// Hue (degrees), saturation and lightness (fractions) added at full progress.
+    pub by: (f64, f64, f64),
+    pub hsl: bool,
+    pub ccw: bool,
+    /// Progress 0..1.
+    pub t: f64,
+}
+
+impl ColorShift {
+    pub fn apply(&self, base: crate::Rgba) -> crate::Rgba {
+        let t = if self.t.is_finite() { self.t.clamp(0.0, 1.0) } else { 0.0 };
+        match self.to {
+            Some(to) if !self.hsl => base.lerp(to, t),
+            Some(to) => {
+                let (h0, s0, l0) = base.to_hsl();
+                let (h1, s1, l1) = to.to_hsl();
+                // The hue turns the short way round unless told to go counter-clockwise.
+                let mut dh = h1 - h0;
+                if self.ccw {
+                    if dh > 0.0 {
+                        dh -= 360.0;
+                    }
+                } else if dh < 0.0 {
+                    dh += 360.0;
+                }
+                crate::Rgba::from_hsl(h0 + dh * t, s0 + (s1 - s0) * t, l0 + (l1 - l0) * t, base.a)
+            }
+            None => {
+                let (h, s, l) = base.to_hsl();
+                let (dh, ds, dl) = self.by;
+                let f = |v: f64| if v.is_finite() { v } else { 0.0 };
+                let dh = if self.ccw { -f(dh) } else { f(dh) };
+                crate::Rgba::from_hsl(h + dh * t, s + f(ds) * t, l + f(dl) * t, base.a)
+            }
+        }
+    }
+}
+
+/// A `p:tav` keyframe.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Keyframe {
+    pub time: f64,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fmla: Option<String>,
+}
+
+impl Behavior {
+    /// From the effect's start to this behaviour's end, reversal and repeats included (seconds).
+    pub fn span(&self) -> f64 {
+        let reps = if self.repeat.is_finite() && self.repeat > 0.0 { self.repeat.min(1.0e4) } else { 1.0 };
+        (self.begin_ms as f64 + self.dur_ms as f64 * if self.auto_reverse { 2.0 } else { 1.0 } * reps) / 1000.0
+    }
 }
 
 impl Default for Animation {
@@ -352,6 +493,7 @@ impl Default for Animation {
             smooth_end: 0.0,
             bounce_end: 0.0,
             auto_reverse: false,
+            behaviors: vec![],
         }
     }
 }

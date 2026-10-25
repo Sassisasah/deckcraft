@@ -25,6 +25,11 @@ pub(crate) struct EffectSpec {
     pub xf: Xfrm,
     pub slide_w: f64,
     pub slide_h: f64,
+    /// The file's behaviours, when they can be played ([`crate::behave`]), with each one's
+    /// resolved colour, and their total length (seconds).
+    pub behaviors: Vec<deckcraft_model::anim::Behavior>,
+    pub behavior_colors: Vec<Option<Rgba>>,
+    pub behavior_span: f64,
 }
 
 /// Map an exit effect id to the entrance effect it mirrors.
@@ -95,6 +100,11 @@ impl EffectSpec {
     /// current fill colour (for colour emphasis).
     pub fn eval(&self, p: f64, cur: Rgba) -> AnimState {
         let p = crate::clampf(p, 0.0, 1.0, 0.0);
+        if !self.behaviors.is_empty() {
+            // The effect's own acceleration applies to its whole timeline.
+            let e = ease(p, self.accel, self.decel, 0.0);
+            return crate::behave::eval(&self.behaviors, &self.behavior_colors, e * self.behavior_span, self.xf, self.slide_w, self.slide_h);
+        }
         let s = match self.class {
             AnimClass::Entrance => self.entrance(p, false),
             AnimClass::Exit => self.entrance(1.0 - p, true),
@@ -110,8 +120,10 @@ impl EffectSpec {
         match self.class {
             AnimClass::Entrance | AnimClass::Media => AnimState::default(),
             AnimClass::Exit => AnimState::hidden(),
+            AnimClass::Emphasis if !self.behaviors.is_empty() => self.eval(1.0, cur),
             AnimClass::Emphasis if emphasis_persists(&self.effect) => self.emphasis(1.0, cur).sanitized(),
             AnimClass::Emphasis => AnimState::default(),
+            AnimClass::Path if !self.behaviors.is_empty() => self.eval(1.0, cur),
             AnimClass::Path => self.motion(1.0).sanitized(),
         }
     }

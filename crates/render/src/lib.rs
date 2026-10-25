@@ -185,13 +185,32 @@ pub struct ShapeState {
     pub clip: Option<[f64; 4]>,
     /// Colour override for emphasis effects (fill).
     pub tint: Option<Rgba>,
+    /// Colour changes in progress for the fill, the outline and the text, applied to their own
+    /// colours; the text drawn bold or not.
+    pub fill_shift: Option<deckcraft_model::anim::ColorShift>,
+    pub line_shift: Option<deckcraft_model::anim::ColorShift>,
+    pub text_shift: Option<deckcraft_model::anim::ColorShift>,
+    pub bold: Option<bool>,
     /// Per-paragraph states of by-paragraph text builds (paragraph index, state).
     pub paras: Vec<(usize, ParaState)>,
 }
 
 impl Default for ShapeState {
     fn default() -> Self {
-        ShapeState { visible: true, opacity: 1.0, offset: Vec2::ZERO, scale: (1.0, 1.0), rotate: 0.0, clip: None, tint: None, paras: vec![] }
+        ShapeState {
+            visible: true,
+            opacity: 1.0,
+            offset: Vec2::ZERO,
+            scale: (1.0, 1.0),
+            rotate: 0.0,
+            clip: None,
+            tint: None,
+            fill_shift: None,
+            line_shift: None,
+            text_shift: None,
+            bold: None,
+            paras: vec![],
+        }
     }
 }
 
@@ -1053,6 +1072,13 @@ impl Renderer {
         // Placeholders in the editor: dashed outline and prompt, nothing else when empty.
         let empty_ph = s.ph.is_some() && s.text.as_ref().is_none_or(TextBody::is_empty) && !is_pic && !matches!(s.kind, ShapeKind::Media(_));
         let fill = if let Some(t) = st.tint { Some(Fill::solid(deckcraft_model::ColorRef::rgb(t))) } else { fill };
+        // Colour effects work on the shape's own solid fill and outline colours.
+        let shifted = |f: &Option<Fill>, sh: Option<deckcraft_model::anim::ColorShift>, ph: Option<Rgba>| match (f, sh) {
+            (Some(Fill::Solid { color: c }), Some(sh)) => Some(Fill::solid(deckcraft_model::ColorRef::rgb(sh.apply(rctx.color(c, ph))))),
+            _ => f.clone(),
+        };
+        let fill = if st.tint.is_none() { shifted(&fill, st.fill_shift, fill_ph) } else { fill };
+        let line = if st.line_shift.is_some() { deckcraft_model::Line { fill: shifted(&line.fill, st.line_shift, line_ph), ..line } } else { line };
         // Effects below the shape.
         if let Some(e) = &effects {
             // A picture (or picture fill) casts its shadow from its pixels, not its frame.
@@ -1372,7 +1398,27 @@ impl Renderer {
                 } else {
                     body
                 };
+                // An effect that sets the text bold lays it out again in bold.
+                let bolded;
+                let body = match st.bold {
+                    Some(b) => {
+                        let mut nb = body.clone();
+                        for p in &mut nb.paragraphs {
+                            for r in &mut p.runs {
+                                r.props.bold = Some(b);
+                            }
+                        }
+                        bolded = nb;
+                        &bolded
+                    }
+                    None => body,
+                };
                 let mut l = deckcraft_text::layout(rctx, s, body, &Opts { rect: tr, fields: &f.fields, prompt_color: None, no_shrink: false });
+                if let Some(sh) = st.text_shift {
+                    for run in &mut l.runs {
+                        run.color = sh.apply(run.color);
+                    }
+                }
                 if editing {
                     preview_empty_bullets(&mut l);
                 }

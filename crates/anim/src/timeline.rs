@@ -233,7 +233,11 @@ impl Timeline {
                 let xf = xfrm_of(a.shape).or_else(|| shape.and_then(|s| s.xfrm)).unwrap_or(Xfrm::new(sw / 4.0, sh / 4.0, sw / 2.0, sh / 2.0));
                 let xf = sanitize_xfrm(xf, sw, sh);
                 let spec = Arc::new(build_spec(a, xf, sw, sh, &resolve));
-                let dur = secs(a.duration_ms);
+                // Played from its behaviours, an effect lasts as long as they do (a behaviour that
+                // reverses or repeats runs past the longest single duration). A one-millisecond
+                // `set` (Appear, Disappear) stays instant.
+                let span = if spec.behavior_span <= INSTANT_SECS { 0.0 } else { spec.behavior_span };
+                let dur = if spec.behaviors.is_empty() || a.auto_reverse { secs(a.duration_ms) } else { span.max(secs(a.duration_ms)) };
                 let delay = secs(a.delay_ms);
                 let until_next_click = a.repeat == u32::MAX;
                 let iterations = if until_next_click || a.repeat <= 1 { 1.0 } else { (a.repeat as f64).min(MAX_ITERATIONS) };
@@ -568,9 +572,19 @@ fn shape_index(shapes: &[Shape]) -> HashMap<ShapeId, &Shape> {
     out
 }
 
+/// Behaviours this short (PowerPoint writes `dur="1"` on a `set`) take no time.
+const INSTANT_SECS: f64 = 0.001;
+
 fn build_spec(a: &Animation, xf: Xfrm, sw: f64, sh: f64, resolve: &dyn Fn(&deckcraft_model::ColorRef) -> Rgba) -> EffectSpec {
     let effect = if a.class == AnimClass::Exit { exit_base(&a.effect).to_string() } else { a.effect.clone() };
     let path = if a.class == AnimClass::Path { Some(motion_path(&a.effect, &a.option, a.path.as_deref())) } else { None };
+    // An effect that reverses as a whole plays its behaviours forward once; the timeline runs
+    // them back.
+    let behaviors: Vec<_> = if crate::behave::playable(&a.behaviors) {
+        a.behaviors.iter().map(|b| deckcraft_model::anim::Behavior { auto_reverse: b.auto_reverse && !a.auto_reverse, ..b.clone() }).collect()
+    } else {
+        vec![]
+    };
     EffectSpec {
         class: a.class,
         effect,
@@ -585,5 +599,8 @@ fn build_spec(a: &Animation, xf: Xfrm, sw: f64, sh: f64, resolve: &dyn Fn(&deckc
         xf,
         slide_w: sw,
         slide_h: sh,
+        behaviors: behaviors.clone(),
+        behavior_colors: behaviors.iter().map(|b| b.color_to.as_ref().map(resolve)).collect(),
+        behavior_span: behaviors.iter().map(|b| b.span()).fold(0.0, f64::max),
     }
 }
