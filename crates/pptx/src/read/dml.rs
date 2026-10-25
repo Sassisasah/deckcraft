@@ -128,8 +128,10 @@ pub fn gradient(f: &El) -> Gradient {
 /// `blipFill` (either `a:` or `p:`) → picture fill, registering the image as media.
 pub fn blip_fill(imp: &mut Imp, part: &Part, bf: &El) -> Option<PictureFill> {
     let blip = bf.child("blip");
-    let media = blip.and_then(|b| media_ref(imp, part, b));
-    let media = media?;
+    // Office SVG pictures (icons): `asvg:svgBlip` in the blip's extLst, often with no raster
+    // fallback (`a:blip` without `r:embed`). PowerPoint draws the SVG when there is one.
+    let svg = blip.and_then(|b| b.child("extLst")).and_then(|x| x.find("svgBlip")).and_then(|s| media_ref(imp, part, s));
+    let media = svg.or_else(|| blip.and_then(|b| media_ref(imp, part, b)))?;
     let mut pf = PictureFill { media, upright: !bf.bool("rotWithShape").unwrap_or(true), ..Default::default() };
     if let Some(layer) = blip.and_then(|b| b.child("extLst")).and_then(|x| x.find("imgLayer"))
         && let Some(effect) = layer

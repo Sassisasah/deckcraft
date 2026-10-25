@@ -21,7 +21,7 @@ revision history.
 | 1 | PPTX corpus is only decks we author (no PowerPoint reference renders) | File format | B | 20–35 | [file-format-parity.md](file-format-parity.md) |
 | 2 | Data loss and crashes on common paths (#60, #40, #59) | Stability | B | 6–12 | this file |
 | 3 | PPTX round trip drops media options and rewind (#74, #77) | File format | B | 2–4 | [file-format-parity.md](file-format-parity.md) |
-| 4 | SVG pictures don't render (EMF/WMF do) | File format | B | 4–8 | [file-format-parity.md](file-format-parity.md) |
+| 4 | SVG files can't be inserted (imported SVG pictures render) | File format | B | 2–4 | [file-format-parity.md](file-format-parity.md) |
 | 5 | No localization: English only | Localization | B (infra + 5 languages) | 55–90 | [localization-parity.md](localization-parity.md) |
 | 6 | No printing | Feature | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
 | 7 | Fonts: only Regular, Bold and Italic faces (#69) | Feature | B | 3–5 | [ui-parity.md](ui-parity.md) |
@@ -105,14 +105,16 @@ Detail in [file-format-parity.md](file-format-parity.md).
 - **Impact:** a deck opened and saved silently loses show behaviour.
 - **Estimate:** 2–4 h. **Beta blocker.**
 
-### SVG pictures don't render
+### SVG files can't be inserted
 - **Evidence:** `crates/render/src/images.rs` decodes through `image` 0.25 (PNG, JPEG, WebP, GIF,
-  TIFF, BMP), and EMF/WMF through `deckcraft-metafile` (ported from WordCraft: paths, fills, pens,
+  TIFF, BMP), EMF/WMF through `deckcraft-metafile` (ported from WordCraft: paths, fills, pens,
   pattern and hatch brushes, bitmaps and text; rectangle clip regions are applied, EMF+ only
-  pictures play their EMF+ records).
-  Nothing reads SVG; PowerPoint's Insert Icons stores SVG with a PNG fallback.
-- **Impact:** SVG icons show only their raster fallback, and SVG files can't be inserted.
-- **Estimate:** 4–8 h (an SVG renderer through `resvg`-style crates).
+  pictures play their EMF+ records), and SVG through `resvg` (`crates/render/src/svg.rs`): an
+  imported `asvg:svgBlip` is the picture, with or without its PNG fallback, and tiles at the SVG's
+  own size. Insert Picture doesn't accept `.svg` files yet, and a saved SVG picture keeps no PNG
+  fallback for older readers.
+- **Impact:** SVG files can't be inserted.
+- **Estimate:** 2–4 h.
 
 ### Macro-enabled variants aren't recognized
 - **Evidence:** `.pptx`, `.potx` and `.ppsx` open and save with their own main content types
