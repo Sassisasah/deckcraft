@@ -97,6 +97,29 @@ pub fn is_emoji_cluster(cluster: &[char]) -> bool {
         || (cluster.contains(&'\u{200D}') && cluster.iter().any(|&c| pictographic(c)))
 }
 
+/// Characters PowerPoint draws from the system's symbol font when the run's font lacks them:
+/// arrows, technical symbols (⌘ ⏎), geometric shapes, miscellaneous symbols and dingbats (✓).
+pub fn is_symbol(c: char) -> bool {
+    matches!(c as u32, 0x2190..=0x21FF | 0x2300..=0x23FF | 0x25A0..=0x27BF | 0x2900..=0x297F | 0x2B00..=0x2BFF)
+}
+
+/// Families PowerPoint draws a symbol from before the system symbol font, per platform.
+/// macOS: Core Text's cascade from a Latin face (Century Gothic, Helvetica…) gives Lucida Grande
+/// for arrows, ⌘ and ✓ and Helvetica for ⏎ (queried with `CTFontCreateForString`). Windows:
+/// technical symbols (⌘) come from Cambria (Cambria Math has the same glyph but no bold face;
+/// advance and ink measured against PowerPoint;
+/// Segoe UI Symbol's are a third smaller).
+fn symbol_families(c: char) -> &'static [&'static str] {
+    let technical = (0x2300..=0x23FF).contains(&(c as u32));
+    if cfg!(target_os = "macos") {
+        if technical { &["Lucida Grande", "Helvetica"] } else { &["Lucida Grande"] }
+    } else if cfg!(target_os = "windows") && technical {
+        &["Cambria", "Cambria Math"]
+    } else {
+        &[]
+    }
+}
+
 /// Does `face` draw every character of the cluster?
 pub fn covers_cluster(face: &FontFace, cluster: &[char]) -> bool {
     cluster.iter().all(|c| ignorable(*c) || face.covers(*c))
@@ -153,6 +176,22 @@ impl FontDb {
         }
         let first = || chain.first().cloned().unwrap_or_else(|| self.face(crate::DEFAULT_FAMILY, style));
         let Some(key) = cluster.iter().copied().find(|c| !ignorable(*c)) else { return first() };
+        // Symbols the run's font lacks (✓ ⌘ ⇧ ⏎ →): PowerPoint takes them from the system's symbol
+        // font (Segoe UI Symbol, Apple Symbols), not from the first installed text font that has
+        // them.
+        if is_symbol(key) {
+            for fam in symbol_families(key) {
+                if self.is_loaded(fam) || self.has_family(fam) {
+                    let f = self.face(fam, style);
+                    if f.family.eq_ignore_ascii_case(fam) && covers_cluster(&f, cluster) {
+                        return f;
+                    }
+                }
+            }
+            if let Some(f) = self.plain_face_for(key, cluster) {
+                return f;
+            }
+        }
         let script = cluster.iter().find_map(|c| script_of(*c));
         // Scripts with a platform cascade (Arabic, Hebrew, Thai, Devanagari): the bundled face,
         // then installed ones; the others keep the loaded-faces-first order (Japanese documents
@@ -296,6 +335,16 @@ mod tests {
         });
         let family = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("cascade did not return");
         assert!(!family.is_empty());
+    }
+
+    #[test]
+    fn symbols_are_told_from_text() {
+        for c in ['✓', '⌘', '⇧', '⏎', '→', '■'] {
+            assert!(is_symbol(c), "{c}");
+        }
+        for c in ['a', 'ß', '€', '•', '\u{0628}'] {
+            assert!(!is_symbol(c), "{c}");
+        }
     }
 
     #[test]

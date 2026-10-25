@@ -349,8 +349,6 @@ struct Style {
     size: f64,
     color: Rgba,
     alpha: f64,
-    fake_bold: bool,
-    fake_italic: bool,
     baseline: f64,
     spacing: f64,
     caps: Caps,
@@ -437,8 +435,6 @@ fn make_style(ctx: &Ctx, r: &RunProps, scale: f64, prompt: Option<Rgba>) -> Styl
     let bold = r.bold.unwrap_or(false);
     let italic = r.italic.unwrap_or(false);
     let face = FontDb::global().document_face(&family, style_name(bold, italic));
-    let fake_bold = bold && face.weight < 550.0;
-    let fake_italic = italic && !face.italic;
     let size = (r.size.unwrap_or(18.0) * scale).clamp(0.5, 4000.0);
     let (mut color, alpha, gradient) = match &r.fill {
         // The resolved colour carries the fill's transparency (`a:alpha`): it is applied once.
@@ -476,8 +472,6 @@ fn make_style(ctx: &Ctx, r: &RunProps, scale: f64, prompt: Option<Rgba>) -> Styl
         size,
         color,
         alpha,
-        fake_bold,
-        fake_italic,
         baseline: r.baseline.unwrap_or(0.0),
         spacing: r.spacing.unwrap_or(0.0) * scale,
         caps: r.caps.unwrap_or(Caps::None),
@@ -881,10 +875,18 @@ fn shape_cells(
             .filter(|f| db.has_family(f))
             .map(|f| db.face(f, st.style_name))
             .filter(|f| covers_symbol(f, cluster.first().copied().unwrap_or(' ')));
+        // After a symbol drawn from the symbol fallback (⌘ ⇧), spaces and `+` go back to the run's
+        // font, as in PowerPoint, instead of staying in the symbol face.
+        let after_symbol =
+            chars.get(a.wrapping_sub(1)).is_some_and(|c| deckcraft_fonts::is_symbol(*c)) && !cluster.iter().any(|c| deckcraft_fonts::is_symbol(*c));
         let face = match (sym_face, prev.as_ref()) {
             (Some(f), _) => f,
             (None, Some(p))
-                if neutral && !p.is_color() && deckcraft_fonts::covers_cluster(p, cluster) && char_style.get(a.wrapping_sub(1)) == Some(&si) =>
+                if neutral
+                    && !after_symbol
+                    && !p.is_color()
+                    && deckcraft_fonts::covers_cluster(p, cluster)
+                    && char_style.get(a.wrapping_sub(1)) == Some(&si) =>
             {
                 p.clone()
             }
@@ -2237,8 +2239,10 @@ fn layout_scaled(ctx: &Ctx, shape: &Shape, body: &TextBody, bp: &BodyProps, opts
                     color: st.color,
                     glyphs: vec![],
                     cells: vec![],
-                    fake_bold: st.fake_bold,
-                    fake_italic: st.fake_italic,
+                    // Per face: a fallback face (symbols the run's font lacks) has no bold or italic
+                    // of its own and is slanted or emboldened like the run.
+                    fake_bold: st.style_name.contains("Bold") && face.weight < 550.0,
+                    fake_italic: st.style_name.contains("Italic") && !face.italic,
                     outline: st.outline,
                     para: line.para,
                     chars: (ci, ci + 1),

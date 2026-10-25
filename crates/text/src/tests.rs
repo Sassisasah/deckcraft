@@ -1840,3 +1840,22 @@ fn an_empty_paragraph_keeps_its_paragraph_mark_height() {
     let h = l.lines[1].bottom - l.lines[1].top;
     assert!((h - h10).abs() < 0.5, "a 10pt empty paragraph should give {h10}, got {h}");
 }
+
+#[test]
+fn a_bold_symbol_from_a_fallback_face_is_emboldened() {
+    let (p, mut sh) = setup("Done ✓ ⌘", 600.0, 300.0);
+    if let Some(t) = sh.text.as_mut() {
+        for para in &mut t.paragraphs {
+            for r in &mut para.runs {
+                r.props.bold = Some(true);
+            }
+        }
+    }
+    let l = lay(&p, &sh, 600.0, 300.0);
+    assert!(!l.runs.is_empty());
+    // Each run is emboldened by its own face: a face without a bold weight (a symbol fallback)
+    // is drawn emboldened, a bold face is not.
+    for r in l.runs.iter().filter(|r| !r.cells.is_empty()) {
+        assert_eq!(r.fake_bold, r.face.weight < 550.0, "{} {}", r.face.family, r.face.weight);
+    }
+}

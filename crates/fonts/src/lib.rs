@@ -13,7 +13,7 @@ mod fontdb;
 pub mod script;
 mod shape;
 
-pub use fallback::{bundled_families, covers_cluster, is_emoji_cluster, ligature_carets};
+pub use fallback::{bundled_families, covers_cluster, is_emoji_cluster, is_symbol, ligature_carets};
 pub use fontdb::{
     FALLBACK_FAMILY, FaceRef, FontDb, FontFace, LAST_RESORT_FAMILY, MISSING_FONT_FAMILY, base_style, bundled, substitutes, system_font_dirs,
 };
