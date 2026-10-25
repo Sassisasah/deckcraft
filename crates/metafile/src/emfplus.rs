@@ -1,8 +1,10 @@
 //! EMF+ (MS-EMFPLUS): GDI+ drawing records carried in EMF comment records.
 //!
-//! Most EMF+ files are *dual*: the same picture is also drawn with plain EMF records, which
-//! [`crate::emf`] already plays, so this reader ignores their EMF+ part. An *EMF+ only* file has
-//! nothing else to draw; for those this reader plays the records:
+//! Most EMF+ files are *dual*: the picture is also drawn with plain EMF records for GDI-only
+//! readers. PowerPoint draws them with GDI+, which plays the EMF+ records and skips the plain ones
+//! (except those after EmfPlusGetDC); the plain fallback can be incomplete (Office logos whose EMF+
+//! part holds a nested metafile the fallback lacks). So both dual and EMF+-only files play the
+//! EMF+ records:
 //! - brushes (solid, hatch, texture, linear and path gradients), pens, paths, images, fonts,
 //!   string formats and regions, including objects split across several records;
 //! - rectangles, polygons, lines, ellipses, paths and Béziers;
@@ -214,8 +216,12 @@ struct Saved {
 }
 
 pub(crate) struct Plus {
-    /// An EMF+ header said the file is EMF+ only, so these records are the picture.
+    /// An EMF+ header was read: these records are the picture.
     active: bool,
+    /// The header said dual: plain EMF records are only played after EmfPlusGetDC.
+    dual: bool,
+    /// The last EMF+ record was EmfPlusGetDC: the plain EMF records that follow are played.
+    gdi: bool,
     dpi: f64,
     world: Xform,
     page: f64,
@@ -233,6 +239,8 @@ impl Plus {
     pub fn new() -> Self {
         Plus {
             active: false,
+            dual: false,
+            gdi: false,
             dpi: 96.0,
             world: IDENTITY,
             page: 1.0,
@@ -247,6 +255,7 @@ impl Plus {
 
     /// Plays the EMF+ records of one EMR_COMMENT payload (after the identifier).
     pub fn comment(&mut self, cv: &mut Canvas, data: Bytes) {
+        self.gdi = false;
         let mut pos = 0usize;
         while !cv.full() {
             let Some(tail) = data.0.get(pos..) else { break };
@@ -259,10 +268,16 @@ impl Plus {
                 break;
             }
             let Some(rec) = tail.slice(12, dsize) else { break };
+            self.gdi = typ == 0x4004;
             let _ = self.record(cv, typ, flags, Bytes(rec));
             let Some(next) = pos.checked_add(size) else { break };
             pos = next;
         }
+    }
+
+    /// Should a plain EMF record be played? Not in a dual file, except after EmfPlusGetDC.
+    pub fn plays_gdi(&self) -> bool {
+        !(self.active && self.dual) || self.gdi
     }
 
     /// World units to device pixels before the canvas's own mapping.
@@ -276,8 +291,9 @@ impl Plus {
 
     fn record(&mut self, cv: &mut Canvas, typ: u16, flags: u16, r: Bytes) -> Option<()> {
         if typ == 0x4001 {
-            // Header: dual files also draw with EMF records, which win.
-            self.active = flags & 1 == 0;
+            // Header (bit 0: dual, also drawn with plain EMF records for GDI-only readers).
+            self.active = true;
+            self.dual = flags & 1 != 0;
             if let Some(d) = r.u32(8).map(f64::from).filter(|d| *d > 0.0 && *d < 100_000.0) {
                 self.dpi = d;
             }

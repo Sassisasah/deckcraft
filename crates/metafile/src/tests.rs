@@ -1656,12 +1656,17 @@ fn emfplus_only_fill_rects_with_argb_colour() {
 }
 
 #[test]
-fn emfplus_dual_files_draw_only_the_emf_records() {
+fn emfplus_dual_files_draw_the_emfplus_records_like_gdiplus() {
+    // GDI+ (PowerPoint) plays the EMF+ part of a dual file and skips the plain fallback records.
     let fill = prec(0x400A, 0x8000, &cat(vec![h32(0xFFFF_0000), h32(1), f32s(&[0.0, 0.0, 5.0, 5.0])]));
     let gdi = erec(43, &cat(vec![e32(0), e32(0), e32(9), e32(9)]));
-    let p = parse(&emf(&[plus_comment(&[plus_header(true), fill]), gdi], [0; 4], [0; 4])).unwrap();
+    let p = parse(&emf(&[plus_comment(&[plus_header(true), fill.clone()]), gdi.clone()], [0; 4], [0; 4])).unwrap();
     assert_eq!(p.items.len(), 1);
-    assert_eq!(path_segs(&p.items[0]).1, Some([255, 255, 255, 255]));
+    assert_eq!(path_segs(&p.items[0]).1, Some([255, 0, 0, 255]));
+    // After EmfPlusGetDC the plain records are played too.
+    let get_dc = prec(0x4004, 0, &[]);
+    let p = parse(&emf(&[plus_comment(&[plus_header(true), fill, get_dc]), gdi], [0; 4], [0; 4])).unwrap();
+    assert_eq!(p.items.len(), 2);
 }
 
 #[test]
