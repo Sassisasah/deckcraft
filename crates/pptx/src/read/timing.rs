@@ -75,6 +75,16 @@ fn collect<'a>(e: &'a El, trigger: Option<u32>, out: &mut Vec<Found<'a>>, depth:
     }
 }
 
+/// PowerPoint's "Auto-reverse" option sits on the behaviour nodes (`cBhvr/cTn autoRev="1"`), not on
+/// the effect node: the effect plays forward and back when every timed behaviour reverses. Color
+/// Pulse writes autoRev there too, but its effect already goes to the colour and back.
+fn behaviours_auto_reverse(effect: &El) -> bool {
+    let mut ctns = Vec::new();
+    effect.find_all("cTn", &mut ctns);
+    let timed: Vec<_> = ctns.into_iter().filter(|t| ms_attr(t, "dur").is_some_and(|d| d > 1)).collect();
+    !timed.is_empty() && timed.iter().all(|t| t.bool("autoRev").unwrap_or(false))
+}
+
 fn max_dur(e: &El, depth: usize) -> Option<u32> {
     if depth > 64 {
         return None;
@@ -144,7 +154,7 @@ pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, shapes: 
             trigger: f.trigger.and_then(|t| ctx.lookup(t)),
             preset_id: Some(preset),
             preset_subtype: Some(sub),
-            auto_reverse: c.bool("autoRev").unwrap_or(false),
+            auto_reverse: c.bool("autoRev").unwrap_or(false) || (effect != "colorPulse" && behaviours_auto_reverse(c)),
             // PowerPoint's "Rewind when done playing" is `fill="remove"` on the effect node.
             rewind: c.attr("fill") == Some("remove"),
             smooth_start: c.f64("accel").map(|v| v / 100_000.0).unwrap_or(0.0),

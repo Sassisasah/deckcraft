@@ -1,4 +1,5 @@
 mod anchor;
+mod auto_reverse;
 mod chart_embed;
 mod comments;
 mod corpus;
